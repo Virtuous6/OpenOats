@@ -11,7 +11,9 @@ struct ContentView: View {
     @State private var transcriptLogger = TranscriptLogger()
     @State private var overlayManager = OverlayManager()
     @State private var lastThemUtteranceCount = 0
-    @State private var isTranscriptExpanded = false
+    @AppStorage("isTranscriptExpanded") private var isTranscriptExpanded = true
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @State private var showOnboarding = false
     @State private var audioLevel: Float = 0
 
     var body: some View {
@@ -80,7 +82,21 @@ struct ContentView: View {
         }
         .frame(minWidth: 280, maxWidth: 360, minHeight: 400)
         .background(.ultraThinMaterial)
+        .overlay {
+            if showOnboarding {
+                OnboardingView(isPresented: $showOnboarding)
+                    .transition(.opacity)
+            }
+        }
+        .onChange(of: showOnboarding) {
+            if !showOnboarding {
+                hasCompletedOnboarding = true
+            }
+        }
         .task {
+            if !hasCompletedOnboarding {
+                showOnboarding = true
+            }
             if knowledgeBase == nil {
                 let kb = KnowledgeBase(settings: settings)
                 knowledgeBase = kb
