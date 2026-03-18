@@ -179,18 +179,52 @@ struct SettingsView: View {
                 }
 
                 if isAddingTemplate {
-                    VStack(alignment: .leading, spacing: 8) {
-                        TextField("Template Name", text: $newTemplateName)
-                            .font(.system(size: 12))
-                        TextField("SF Symbol (e.g. doc.text)", text: $newTemplateIcon)
-                            .font(.system(size: 12, design: .monospaced))
-                        TextEditor(text: $newTemplatePrompt)
-                            .font(.system(size: 11, design: .monospaced))
-                            .frame(height: 100)
+                    VStack(alignment: .leading, spacing: 10) {
+                        // Name
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Name")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            TextField("e.g. Sprint Planning", text: $newTemplateName)
+                                .font(.system(size: 12))
+                        }
+
+                        // Icon picker
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Icon")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            IconPickerGrid(selected: $newTemplateIcon)
+                        }
+
+                        // System prompt
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Notes Prompt")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text("Instructions for how the AI should format notes for this meeting type.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                            ZStack(alignment: .topLeading) {
+                                if newTemplatePrompt.isEmpty {
+                                    Text("e.g. You are a meeting notes assistant. Given a transcript, produce structured notes with sections for...")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.quaternary)
+                                        .padding(.top, 6)
+                                        .padding(.leading, 4)
+                                        .allowsHitTesting(false)
+                                }
+                                TextEditor(text: $newTemplatePrompt)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .frame(height: 100)
+                                    .scrollContentBackground(.hidden)
+                            }
                             .overlay(
                                 RoundedRectangle(cornerRadius: 4)
                                     .stroke(.quaternary)
                             )
+                        }
+
                         HStack {
                             Button("Cancel") {
                                 isAddingTemplate = false
@@ -254,6 +288,48 @@ struct SettingsView: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             settings.notesFolderPath = url.path
+        }
+    }
+}
+
+// MARK: - Icon Picker
+
+private struct IconPickerGrid: View {
+    @Binding var selected: String
+
+    private static let icons = [
+        "doc.text", "person.2", "person.3", "person.badge.plus",
+        "calendar", "clock", "arrow.up.circle", "magnifyingglass",
+        "lightbulb", "star", "flag", "bolt",
+        "bubble.left.and.bubble.right", "phone", "video",
+        "briefcase", "chart.bar", "list.bullet",
+        "checkmark.circle", "gear", "globe", "book",
+        "pencil", "megaphone",
+    ]
+
+    private let columns = Array(repeating: GridItem(.fixed(28), spacing: 4), count: 8)
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 4) {
+            ForEach(Self.icons, id: \.self) { icon in
+                Button {
+                    selected = icon
+                } label: {
+                    Image(systemName: icon)
+                        .font(.system(size: 13))
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(selected == icon ? Color.accentColor.opacity(0.2) : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(selected == icon ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selected == icon ? .primary : .secondary)
+            }
         }
     }
 }
