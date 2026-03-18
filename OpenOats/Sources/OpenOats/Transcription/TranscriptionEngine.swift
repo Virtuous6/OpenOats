@@ -21,13 +21,44 @@ func diagLog(_ msg: String) {
 @Observable
 @MainActor
 final class TranscriptionEngine {
-    private(set) var isRunning = false
-    private(set) var assetStatus: String = "Ready"
-    private(set) var lastError: String?
-    private(set) var needsModelDownload = false
+    // These properties are read from SwiftUI body during view evaluation.
+    // SwiftUI's ViewBodyAccessor doesn't carry MainActor executor context
+    // in Swift 6.2, so @MainActor-isolated @Observable properties trigger
+    // a failing runtime check in SerialExecutor.isMainExecutor.getter
+    // (EXC_BAD_ACCESS / KERN_PROTECTION_FAILURE).
+    //
+    // We use @ObservationIgnored nonisolated(unsafe) backing storage with
+    // manual observation tracking to bypass the MainActor check while
+    // keeping SwiftUI reactivity. Mutations only happen on MainActor.
+    @ObservationIgnored nonisolated(unsafe) private var _isRunning = false
+    var isRunning: Bool {
+        get { access(keyPath: \.isRunning); return _isRunning }
+        set { withMutation(keyPath: \.isRunning) { _isRunning = newValue } }
+    }
 
-    /// Whether the user has confirmed they want to download models.
-    var downloadConfirmed = false
+    @ObservationIgnored nonisolated(unsafe) private var _assetStatus: String = "Ready"
+    var assetStatus: String {
+        get { access(keyPath: \.assetStatus); return _assetStatus }
+        set { withMutation(keyPath: \.assetStatus) { _assetStatus = newValue } }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _lastError: String?
+    var lastError: String? {
+        get { access(keyPath: \.lastError); return _lastError }
+        set { withMutation(keyPath: \.lastError) { _lastError = newValue } }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _needsModelDownload = false
+    var needsModelDownload: Bool {
+        get { access(keyPath: \.needsModelDownload); return _needsModelDownload }
+        set { withMutation(keyPath: \.needsModelDownload) { _needsModelDownload = newValue } }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _downloadConfirmed = false
+    var downloadConfirmed: Bool {
+        get { access(keyPath: \.downloadConfirmed); return _downloadConfirmed }
+        set { withMutation(keyPath: \.downloadConfirmed) { _downloadConfirmed = newValue } }
+    }
 
     private let systemCapture = SystemAudioCapture()
     private let micCapture = MicCapture()
@@ -35,7 +66,8 @@ final class TranscriptionEngine {
     private let settings: AppSettings
 
     /// Audio level from mic for the UI meter.
-    var audioLevel: Float { micCapture.audioLevel }
+    /// nonisolated is safe here — micCapture.audioLevel is thread-safe (NSLock).
+    nonisolated var audioLevel: Float { micCapture.audioLevel }
 
     private var micTask: Task<Void, Never>?
     private var sysTask: Task<Void, Never>?
@@ -177,6 +209,12 @@ final class TranscriptionEngine {
             deviceID: targetMicID
         )
 
+        // Check for immediate mic capture failure
+        if let micError = micCapture.captureError {
+            diagLog("[ENGINE-3-FAIL] mic capture error: \(micError)")
+            lastError = micError
+        }
+
         // 3. Start system audio capture
         diagLog("[ENGINE-4] starting system audio capture...")
         let sysStreams: SystemAudioCapture.CaptureStreams?
@@ -191,6 +229,16 @@ final class TranscriptionEngine {
         }
 
         let store = transcriptStore
+
+        // Health check: warn if mic produces no audio within 5 seconds
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, self.isRunning else { return }
+            if !self.micCapture.hasCapturedFrames && self.micCapture.captureError == nil {
+                diagLog("[ENGINE-HEALTH] no mic audio after 5s")
+                self.lastError = "Microphone is not producing audio. Check your input device in System Settings."
+            }
+        }
 
         // 4. Start system audio transcription
         if let sysStream = sysStreams?.systemAudio {
