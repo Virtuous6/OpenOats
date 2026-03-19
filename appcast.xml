@@ -7,13 +7,13 @@
     <language>en</language>
     <item>
       <title>Version 1.10.6</title>
-      <pubDate>Thu, 19 Mar 2026 17:00:25 +0000</pubDate>
+      <pubDate>Thu, 19 Mar 2026 17:06:33 +0000</pubDate>
       <sparkle:version>1.10.6</sparkle:version>
       <sparkle:shortVersionString>1.10.6</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <enclosure url="https://github.com/yazinsai/OpenOats/releases/download/v1.10.6/OpenOats.dmg"
-       sparkle:edSignature="xlV21KHIm7rb3p3SYQEvF6l1qaG8Dy/5vYugQFEWXEBQ34J7ZCr4gD7wYSGL4rnXQptg/PXPgYSXCDtgQudXBg=="
-       length="5941810"
+       sparkle:edSignature="k+bkz6KQSUt3oqc9tlm1jU1Af/y0LtNJVjOvwh1MM21KSTBfZXIoUHzGaUoDxkBUahp1m18ksKVFtWiUsesACg=="
+       length="5925579"
        type="application/octet-stream" />
     </item>
   </channel>
