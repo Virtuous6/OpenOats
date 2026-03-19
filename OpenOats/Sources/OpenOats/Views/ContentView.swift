@@ -31,14 +31,25 @@ struct ContentView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button {
-                        openWindow(id: "notes")
-                    } label: {
-                        Label("Generate Notes", systemImage: "sparkles")
-                            .font(.system(size: 12))
+                    if lastSessionHasNotes {
+                        Button {
+                            openWindow(id: "notes")
+                        } label: {
+                            Label("View Notes", systemImage: "doc.text")
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    } else {
+                        Button {
+                            openWindow(id: "notes")
+                        } label: {
+                            Label("Generate Notes", systemImage: "sparkles")
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
@@ -229,6 +240,16 @@ struct ContentView: View {
                     }
                 }
 
+                Button {
+                    openWindow(id: "notes")
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Past Meetings")
+
                 if settings.kbFolderPath.isEmpty {
                     Button("Set KB Folder...") {
                         chooseKBFolder()
@@ -310,6 +331,12 @@ struct ContentView: View {
 
     private var isRunning: Bool {
         transcriptionEngine?.isRunning ?? false
+    }
+
+    /// Check if the last ended session already has notes generated.
+    private var lastSessionHasNotes: Bool {
+        guard let lastSession = coordinator.lastEndedSession else { return false }
+        return coordinator.sessionHistory.first { $0.id == lastSession.id }?.hasNotes ?? false
     }
 
     private func sectionHeader(_ title: String) -> some View {
