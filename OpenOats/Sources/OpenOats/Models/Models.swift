@@ -1,8 +1,83 @@
 import Foundation
+import SwiftUI
 
-enum Speaker: String, Codable, Sendable {
+enum Speaker: Codable, Sendable, Hashable {
     case you
     case them
+    case remote(Int)
+
+    var displayLabel: String {
+        switch self {
+        case .you: "You"
+        case .them: "Them"
+        case .remote(let n): "Speaker \(n)"
+        }
+    }
+
+    /// True for any non-mic speaker (.them or .remote).
+    var isRemote: Bool {
+        switch self {
+        case .you: false
+        case .them, .remote: true
+        }
+    }
+
+    /// Stable key for persistence (JSONL encoding, backfill dedup).
+    var storageKey: String {
+        switch self {
+        case .you: "you"
+        case .them: "them"
+        case .remote(let n): "remote_\(n)"
+        }
+    }
+
+    /// Color for this speaker in transcript and notes views.
+    var color: Color {
+        switch self {
+        case .you:
+            Color(red: 0.35, green: 0.55, blue: 0.75)    // muted blue
+        case .them:
+            Color(red: 0.82, green: 0.6, blue: 0.3)      // warm amber
+        case .remote(let n):
+            Self.remoteColors[(n - 1) % Self.remoteColors.count]
+        }
+    }
+
+    /// Palette for diarized remote speakers (up to 10 distinct).
+    private static let remoteColors: [Color] = [
+        Color(red: 0.82, green: 0.6, blue: 0.3),      // warm amber (same as .them for Speaker 1)
+        Color(red: 0.6, green: 0.75, blue: 0.45),      // sage green
+        Color(red: 0.75, green: 0.5, blue: 0.7),       // muted purple
+        Color(red: 0.85, green: 0.5, blue: 0.45),      // soft coral
+        Color(red: 0.5, green: 0.7, blue: 0.75),       // teal
+        Color(red: 0.7, green: 0.65, blue: 0.4),       // olive gold
+        Color(red: 0.6, green: 0.55, blue: 0.8),       // lavender
+        Color(red: 0.8, green: 0.55, blue: 0.55),      // dusty rose
+        Color(red: 0.45, green: 0.7, blue: 0.6),       // seafoam
+        Color(red: 0.75, green: 0.65, blue: 0.55),     // tan
+    ]
+
+    // MARK: - Codable
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        switch raw {
+        case "you": self = .you
+        case "them": self = .them
+        default:
+            if raw.hasPrefix("remote_"), let n = Int(raw.dropFirst("remote_".count)) {
+                self = .remote(n)
+            } else {
+                self = .them
+            }
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(storageKey)
+    }
 }
 
 enum RefinementStatus: String, Codable, Sendable {

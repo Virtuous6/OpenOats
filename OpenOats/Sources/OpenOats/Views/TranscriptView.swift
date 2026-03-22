@@ -49,10 +49,10 @@ private struct UtteranceBubble: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(utterance.speaker == .you ? "You" : "Them")
+            Text(utterance.speaker.displayLabel)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(utterance.speaker == .you ? Color.youColor : Color.themColor)
-                .frame(width: 36, alignment: .trailing)
+                .foregroundStyle(utterance.speaker.color)
+                .frame(minWidth: 36, alignment: .trailing)
 
             Text(utterance.displayText)
                 .font(.system(size: 13))
@@ -68,17 +68,17 @@ private struct VolatileIndicator: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(speaker == .you ? "You" : "Them")
+            Text(speaker.displayLabel)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(speaker == .you ? Color.youColor : Color.themColor)
-                .frame(width: 36, alignment: .trailing)
+                .foregroundStyle(speaker.color)
+                .frame(minWidth: 36, alignment: .trailing)
 
             HStack(spacing: 4) {
                 Text(text)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 Circle()
-                    .fill(speaker == .you ? Color.youColor : Color.themColor)
+                    .fill(speaker.color)
                     .frame(width: 4, height: 4)
                     .opacity(0.6)
             }
