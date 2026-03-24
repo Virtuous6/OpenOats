@@ -178,28 +178,19 @@ final class LiveSessionController {
         }
 
         let sessionID = currentSessionID
-        if last.speaker.isRemote {
-            coordinator.suggestionEngine?.onThemUtterance(last)
+        coordinator.suggestionEngine?.onNewUtterance(last)
 
-            Task {
-                await coordinator.sessionRepository.appendLiveUtterance(
-                    sessionID: sessionID ?? "",
-                    utterance: last,
-                    metadata: LiveUtteranceMetadata(
-                        utteranceID: last.id,
-                        suggestionEngine: coordinator.suggestionEngine,
-                        transcriptStore: coordinator.transcriptStore,
-                        isDelayed: true
-                    )
+        Task {
+            await coordinator.sessionRepository.appendLiveUtterance(
+                sessionID: sessionID ?? "",
+                utterance: last,
+                metadata: LiveUtteranceMetadata(
+                    utteranceID: last.id,
+                    suggestionEngine: coordinator.suggestionEngine,
+                    transcriptStore: coordinator.transcriptStore,
+                    isDelayed: true
                 )
-            }
-        } else {
-            Task {
-                await coordinator.sessionRepository.appendLiveUtterance(
-                    sessionID: sessionID ?? "",
-                    utterance: last
-                )
-            }
+            )
         }
     }
 

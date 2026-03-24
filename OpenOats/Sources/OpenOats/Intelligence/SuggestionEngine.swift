@@ -107,8 +107,8 @@ final class SuggestionEngine {
         }
     }
 
-    /// Called when a new THEM utterance is finalized.
-    func onThemUtterance(_ utterance: Utterance) {
+    /// Called when any new utterance is finalized (local or remote).
+    func onNewUtterance(_ utterance: Utterance) {
         guard utterance.id != lastProcessedUtteranceID else { return }
         lastProcessedUtteranceID = utterance.id
 
