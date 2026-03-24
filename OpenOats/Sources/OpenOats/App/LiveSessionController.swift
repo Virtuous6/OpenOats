@@ -13,6 +13,8 @@ struct LiveSessionState {
     var volatileThemText: String = ""
     var suggestions: [Suggestion] = []
     var isGeneratingSuggestions: Bool = false
+    var userNotes: [UserNote] = []
+    var hasUserNotes: Bool = false
     var batchStatus: BatchTranscriptionEngine.Status = .idle
     var batchIsImporting: Bool = false
     var lastEndedSession: SessionIndex? = nil
@@ -125,6 +127,17 @@ final class LiveSessionController {
     func toggleMicMute() {
         guard let engine = coordinator.transcriptionEngine, engine.isRunning else { return }
         engine.isMicMuted.toggle()
+    }
+
+    // MARK: - Quick Notes
+
+    /// Save a user note and persist immediately for crash safety.
+    func saveQuickNote(text: String) {
+        guard let note = coordinator.liveNoteStore.append(text: text),
+              let sessionID = _currentSessionID else { return }
+        Task {
+            await coordinator.sessionRepository.appendUserNote(sessionID: sessionID, note: note)
+        }
     }
 
     // MARK: - KB Indexing
@@ -250,6 +263,9 @@ final class LiveSessionController {
             )
         )
         _currentSessionID = handle.sessionID
+
+        // Start live notepad
+        coordinator.liveNoteStore.start(sessionStartTime: .now)
 
         if let settings {
             if settings.saveAudioRecording || settings.enableBatchRefinement {
@@ -396,6 +412,9 @@ final class LiveSessionController {
             }
         }
 
+        // 6b. Stop live notepad (notes remain for post-session review)
+        coordinator.liveNoteStore.stop()
+
         // 7. Update UI state + refresh history
         coordinator.lastEndedSession = index
         coordinator.sessionTemplateSnapshot = nil
@@ -429,6 +448,7 @@ final class LiveSessionController {
         coordinator.transcriptionEngine?.stop()
         coordinator.audioRecorder?.discardRecording()
         coordinator.transcriptStore.clear()
+        coordinator.liveNoteStore.clear()
         _currentSessionID = nil
         Task {
             await coordinator.sessionRepository.endSession()
@@ -460,6 +480,8 @@ final class LiveSessionController {
         next.volatileThemText = coordinator.transcriptStore.volatileThemText
         next.suggestions = coordinator.suggestionEngine?.suggestions ?? []
         next.isGeneratingSuggestions = coordinator.suggestionEngine?.isGenerating ?? false
+        next.userNotes = coordinator.liveNoteStore.notes
+        next.hasUserNotes = coordinator.liveNoteStore.hasNotes
         next.batchStatus = coordinator.batchStatus
         next.batchIsImporting = coordinator.batchIsImporting
         next.lastEndedSession = lastEndedSession

@@ -483,6 +483,54 @@ actor SessionRepository {
         )
     }
 
+    // MARK: - User Notes
+
+    /// Append a single user note to user-notes.jsonl (immediate flush for crash safety).
+    func appendUserNote(sessionID: String, note: UserNote) {
+        let dir = sessionDirectory(for: sessionID)
+        let fileURL = dir.appendingPathComponent("user-notes.jsonl")
+        let fm = FileManager.default
+
+        if !fm.fileExists(atPath: fileURL.path) {
+            fm.createFile(atPath: fileURL.path, contents: nil,
+                          attributes: [.posixPermissions: 0o600])
+        }
+
+        do {
+            let data = try encoder.encode(note)
+            let handle = try FileHandle(forWritingTo: fileURL)
+            handle.seekToEndOfFile()
+            handle.write(data)
+            handle.write(Data("\n".utf8))
+            try handle.close()
+        } catch {
+            repoLog.error("Failed to write user note: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Load all user notes for a session.
+    func loadUserNotes(sessionID: String) -> [UserNote] {
+        let dir = sessionDirectory(for: sessionID)
+        let fileURL = dir.appendingPathComponent("user-notes.jsonl")
+
+        guard let data = try? Data(contentsOf: fileURL),
+              let text = String(data: data, encoding: .utf8) else {
+            return []
+        }
+
+        return text.split(separator: "\n").compactMap { line in
+            guard let lineData = line.data(using: .utf8) else { return nil }
+            return try? decoder.decode(UserNote.self, from: lineData)
+        }
+    }
+
+    /// Check whether a session has user notes.
+    func hasUserNotes(sessionID: String) -> Bool {
+        let dir = sessionDirectory(for: sessionID)
+        let fileURL = dir.appendingPathComponent("user-notes.jsonl")
+        return FileManager.default.fileExists(atPath: fileURL.path)
+    }
+
     // MARK: - Images
 
     func saveImage(sessionID: String, imageData: Data) -> String {

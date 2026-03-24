@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif;
+    color: #e0e0e0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 40px;
+    gap: 30px;
+    min-height: 100vh;
+  }
+
+  .label {
+    position: absolute;
+    top: -28px;
+    left: 0;
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+
+  /* Main OpenOats window */
+  .main-window {
+    width: 480px;
+    background: #232336;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    position: relative;
+    margin-top: 30px;
+  }
+
+  .titlebar {
+    background: #1e1e30;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid #2a2a44;
+  }
+
+  .traffic-lights {
+    display: flex;
+    gap: 6px;
+  }
+  .traffic-lights span {
+    width: 12px; height: 12px; border-radius: 50%;
+  }
+  .tl-red { background: #ff5f57; }
+  .tl-yellow { background: #febc2e; }
+  .tl-green { background: #28c840; }
+
+  .titlebar-text {
+    flex: 1;
+    text-align: center;
+    font-size: 13px;
+    color: #999;
+    font-weight: 500;
+  }
+
+  .recording-badge {
+    background: #e74c3c;
+    color: white;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  .tabs {
+    display: flex;
+    background: #1e1e30;
+    border-bottom: 1px solid #2a2a44;
+  }
+  .tab {
+    flex: 1;
+    padding: 10px 16px;
+    text-align: center;
+    font-size: 12px;
+    color: #666;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font-weight: 500;
+  }
+  .tab.active {
+    color: #7c8cf8;
+    border-bottom-color: #7c8cf8;
+  }
+  .tab .shortcut {
+    color: #555;
+    font-size: 10px;
+    margin-left: 4px;
+  }
+
+  .transcript-area {
+    padding: 16px;
+    height: 320px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .utterance {
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    border-radius: 8px;
+  }
+  .utterance.you {
+    background: #2a2a44;
+    border-left: 3px solid #7c8cf8;
+  }
+  .utterance.them {
+    background: #2a2a44;
+    border-left: 3px solid #f8a07c;
+  }
+  .utterance .speaker {
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .utterance.you .speaker { color: #7c8cf8; }
+  .utterance.them .speaker { color: #f8a07c; }
+  .utterance .time {
+    font-size: 10px;
+    color: #555;
+    float: right;
+  }
+  .utterance .text {
+    color: #ccc;
+    font-size: 13px;
+  }
+
+  /* Floating Note Input - the key new UI */
+  .floating-note {
+    position: relative;
+    width: 420px;
+    margin-top: 120px;
+  }
+
+  .floating-note-inner {
+    background: #2d2d48;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(124, 140, 248, 0.3);
+    overflow: hidden;
+  }
+
+  .floating-header {
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #3a3a55;
+  }
+
+  .floating-title {
+    font-size: 12px;
+    color: #7c8cf8;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .floating-shortcut {
+    font-size: 10px;
+    color: #555;
+    background: #1e1e30;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+
+  .floating-elapsed {
+    font-size: 11px;
+    color: #e74c3c;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .floating-elapsed::before {
+    content: '';
+    width: 6px; height: 6px;
+    background: #e74c3c;
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+
+  .floating-input-area {
+    padding: 12px 14px;
+  }
+
+  .floating-input {
+    width: 100%;
+    background: #1e1e30;
+    border: 1px solid #3a3a55;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-family: inherit;
+    resize: none;
+    outline: none;
+    min-height: 40px;
+  }
+  .floating-input::placeholder { color: #555; }
+
+  .floating-hint {
+    font-size: 10px;
+    color: #555;
+    margin-top: 6px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .floating-notes-list {
+    padding: 0 14px 12px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+
+  .saved-note {
+    padding: 8px 10px;
+    background: #1e1e30;
+    border-radius: 6px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .saved-note .note-time {
+    color: #7c8cf8;
+    font-weight: 600;
+    font-size: 11px;
+    white-space: nowrap;
+    min-width: 42px;
+  }
+
+  .saved-note .note-text {
+    color: #bbb;
+    line-height: 1.4;
+  }
+
+  .note-count {
+    font-size: 10px;
+    color: #555;
+    padding: 4px 14px 8px;
+    border-top: 1px solid #3a3a55;
+  }
+
+  /* Post-meeting panel */
+  .post-meeting {
+    position: relative;
+    width: 480px;
+    margin-top: 30px;
+  }
+
+  .post-window {
+    background: #232336;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+
+  .post-titlebar {
+    background: #1e1e30;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid #2a2a44;
+  }
+
+  .post-content {
+    padding: 20px;
+  }
+
+  .post-section {
+    margin-bottom: 16px;
+  }
+
+  .post-section-title {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  .action-buttons {
+    display: flex;
+    gap: 10px;
+  }
+
+  .btn {
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .btn-primary {
+    background: #7c8cf8;
+    color: white;
+    flex: 1;
+  }
+
+  .btn-secondary {
+    background: #2a2a44;
+    color: #999;
+    border: 1px solid #3a3a55;
+  }
+
+  .note-preview {
+    background: #1e1e30;
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .note-preview-item {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+  .note-preview-item .npt { color: #7c8cf8; font-weight: 600; min-width: 42px; }
+  .note-preview-item .npc { color: #bbb; }
+
+  .merge-preview {
+    background: #1e1e30;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 12px;
+    color: #bbb;
+    line-height: 1.6;
+    border-left: 3px solid #28c840;
+  }
+
+  .merge-preview h4 { color: #28c840; font-size: 12px; margin-bottom: 6px; }
+  .merge-preview .enriched { color: #ddd; }
+  .merge-preview .from-transcript { color: #888; font-style: italic; font-size: 11px; margin-left: 8px; }
+
+  /* Layout */
+  .column {
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+  }
+
+  .scene-label {
+    text-align: center;
+    font-size: 14px;
+    color: #7c8cf8;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .scene-sublabel {
+    text-align: center;
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 16px;
+  }
+</style>
+</head>
+<body>
+
+<!-- SCENE 1: During Meeting -->
+<div class="column">
+  <div>
+    <div class="scene-label">During Meeting</div>
+    <div class="scene-sublabel">Cmd+N opens floating notepad from anywhere</div>
+  </div>
+
+  <!-- Main Window (background) -->
+  <div class="main-window">
+    <div class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl-red"></span>
+        <span class="tl-yellow"></span>
+        <span class="tl-green"></span>
+      </div>
+      <div class="titlebar-text">Jake x Joe | Neustac Updates</div>
+      <span class="recording-badge">REC</span>
+    </div>
+    <div class="tabs">
+      <div class="tab active">Transcript <span class="shortcut">&#8984;1</span></div>
+      <div class="tab">Notes <span class="shortcut">&#8984;2</span></div>
+      <div class="tab">Notepad <span class="shortcut">&#8984;3</span></div>
+    </div>
+    <div class="transcript-area">
+      <div class="utterance them">
+        <span class="time">14:02</span>
+        <div class="speaker">Them</div>
+        <div class="text">So for the Ty Brown project, I think we should scope it as a three-phase engagement. Discovery first, then the build, then handoff.</div>
+      </div>
+      <div class="utterance you">
+        <span class="time">14:02</span>
+        <div class="speaker">You</div>
+        <div class="text">Yeah that makes sense. What's the timeline looking like for discovery?</div>
+      </div>
+      <div class="utterance them">
+        <span class="time">14:03</span>
+        <div class="speaker">Them</div>
+        <div class="text">I'd say two weeks. We need to audit their current GHL setup, map out the automations, and figure out what's actually being used versus what's dead weight.</div>
+      </div>
+      <div class="utterance you">
+        <span class="time">14:03</span>
+        <div class="speaker">You</div>
+        <div class="text">And pricing? Are we doing fixed or hourly for this one?</div>
+      </div>
+      <div class="utterance them">
+        <span class="time">14:04</span>
+        <div class="speaker">Them</div>
+        <div class="text">I was thinking fixed for discovery, maybe twenty-five hundred, then hourly for the build phase since we don't know the scope yet.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Note Input -->
+  <div class="floating-note">
+    <div class="floating-note-inner">
+      <div class="floating-header">
+        <div class="floating-title">
+          Quick Note
+          <span class="floating-shortcut">&#8984;N</span>
+        </div>
+        <div class="floating-elapsed">12:34</div>
+      </div>
+
+      <div class="floating-notes-list">
+        <div class="saved-note">
+          <span class="note-time">[03:12]</span>
+          <span class="note-text">3-phase: discovery, build, handoff</span>
+        </div>
+        <div class="saved-note">
+          <span class="note-time">[05:47]</span>
+          <span class="note-text">2wk discovery - audit GHL, map automations</span>
+        </div>
+        <div class="saved-note">
+          <span class="note-time">[08:21]</span>
+          <span class="note-text">pricing: $2500 fixed discovery, hourly build</span>
+        </div>
+      </div>
+
+      <div class="floating-input-area">
+        <textarea class="floating-input" placeholder="Type a note... (Enter to save)">ask about Claire timeline too</textarea>
+        <div class="floating-hint">
+          <span>Enter to save &middot; Esc to dismiss</span>
+          <span>4 notes</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SCENE 2: After Meeting -->
+<div class="column">
+  <div>
+    <div class="scene-label">After Meeting</div>
+    <div class="scene-sublabel">Your notes + transcript = enriched output</div>
+  </div>
+
+  <div class="post-meeting">
+    <div class="post-window">
+      <div class="post-titlebar">
+        <div class="traffic-lights">
+          <span class="tl-red"></span>
+          <span class="tl-yellow"></span>
+          <span class="tl-green"></span>
+        </div>
+        <div class="titlebar-text">Jake x Joe | Neustac Updates</div>
+      </div>
+      <div class="post-content">
+        <div class="post-section">
+          <div class="post-section-title">Your Notes (4)</div>
+          <div class="note-preview">
+            <div class="note-preview-item">
+              <span class="npt">[03:12]</span>
+              <span class="npc">3-phase: discovery, build, handoff</span>
+            </div>
+            <div class="note-preview-item">
+              <span class="npt">[05:47]</span>
+              <span class="npc">2wk discovery - audit GHL, map automations</span>
+            </div>
+            <div class="note-preview-item">
+              <span class="npt">[08:21]</span>
+              <span class="npc">pricing: $2500 fixed discovery, hourly build</span>
+            </div>
+            <div class="note-preview-item">
+              <span class="npt">[12:34]</span>
+              <span class="npc">ask about Claire timeline too</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="post-section">
+          <div class="post-section-title">Actions</div>
+          <div class="action-buttons">
+            <button class="btn btn-primary">Enhance Notes</button>
+            <button class="btn btn-secondary">Generate Notes</button>
+          </div>
+        </div>
+
+        <div class="post-section">
+          <div class="post-section-title">Enhanced Output (preview)</div>
+          <div class="merge-preview">
+            <h4>Ty Brown Project - Engagement Structure</h4>
+            <div class="enriched">Three-phase engagement: Discovery (2 weeks, $2,500 fixed) &rarr; Build (hourly, scope TBD) &rarr; Handoff</div>
+            <div class="from-transcript">&mdash; Jake proposed, Joe agreed. Discovery includes GHL audit, automation mapping, and identifying dead-weight workflows.</div>
+            <br>
+            <h4>Discovery Scope</h4>
+            <div class="enriched">Audit current GoHighLevel setup, map all automations, separate active from unused.</div>
+            <div class="from-transcript">&mdash; Jake: "figure out what's actually being used versus what's dead weight"</div>
+            <br>
+            <h4>Open Item</h4>
+            <div class="enriched">Claire (Pilates Chrome extension) timeline not discussed &mdash; follow up needed.</div>
+            <div class="from-transcript">&mdash; Joe noted to ask but conversation moved on</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

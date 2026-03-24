@@ -31,6 +31,9 @@ final class AppCoordinator {
     @ObservationIgnored private let _transcriptStore: TranscriptStore
     nonisolated var transcriptStore: TranscriptStore { _transcriptStore }
 
+    @ObservationIgnored private let _liveNoteStore = LiveNoteStore()
+    nonisolated var liveNoteStore: LiveNoteStore { _liveNoteStore }
+
     @ObservationIgnored nonisolated(unsafe) private var _selectedTemplate: MeetingTemplate?
     var selectedTemplate: MeetingTemplate? {
         get { access(keyPath: \.selectedTemplate); return _selectedTemplate }
