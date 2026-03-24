@@ -11,6 +11,7 @@ struct ContentView: View {
     @Environment(AppCoordinator.self) private var coordinator
     @Environment(\.openWindow) private var openWindow
     @State private var overlayManager = OverlayManager()
+    @State private var notepadOverlayManager = OverlayManager()
     @State private var miniBarManager = MiniBarManager()
     @State private var liveSessionController: LiveSessionController?
     @AppStorage("isTranscriptExpanded") private var isTranscriptExpanded = true
@@ -317,6 +318,7 @@ struct ContentView: View {
             liveSessionController = controller
 
             overlayManager.defaults = container.defaults
+            notepadOverlayManager.defaults = container.defaults
             miniBarManager.defaults = container.defaults
             await container.seedIfNeeded(coordinator: coordinator)
             controller.indexKBIfNeeded(settings: settings)
@@ -350,8 +352,23 @@ struct ContentView: View {
     private var contentWithEventHandlers: some View {
         contentWithLifecycle
         .onKeyPress(.escape) {
+            if notepadOverlayManager.isVisible {
+                notepadOverlayManager.hide()
+                return .handled
+            }
             overlayManager.hide()
             return .handled
+        }
+        .onAppear {
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "n" {
+                    if liveSessionController?.state.isRunning ?? false {
+                        toggleNotepad()
+                        return nil
+                    }
+                }
+                return event
+            }
         }
         .onChange(of: pendingControlBarAction) {
             guard let action = pendingControlBarAction else { return }
@@ -394,6 +411,15 @@ struct ContentView: View {
             volatileThemText: controller.state.volatileThemText
         )
         overlayManager.toggle(content: content)
+    }
+
+    private func toggleNotepad() {
+        let noteStore = coordinator.liveNoteStore
+        let controller = liveSessionController
+        let content = LiveNotePadView(noteStore: noteStore) { text in
+            controller?.saveQuickNote(text: text)
+        }
+        notepadOverlayManager.toggle(content: content)
     }
 
     private func copyTranscript() {

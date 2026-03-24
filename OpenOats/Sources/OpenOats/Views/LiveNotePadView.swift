@@ -4,6 +4,8 @@ import SwiftUI
 /// Cmd+N toggles visibility. Enter saves a note. Esc dismisses.
 struct LiveNotePadView: View {
     @Bindable var noteStore: LiveNoteStore
+    /// Called when a note is saved — caller should persist to SessionRepository.
+    var onNoteSaved: ((String) -> Void)?
     @State private var inputText = ""
     @FocusState private var isInputFocused: Bool
 
@@ -115,8 +117,10 @@ struct LiveNotePadView: View {
     }
 
     private func saveNote() {
-        guard !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        noteStore.append(text: inputText)
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        noteStore.append(text: text)
+        onNoteSaved?(text)
         inputText = ""
     }
 
@@ -133,8 +137,8 @@ struct LiveNotePadView: View {
 
     @State private var pulseOpacity: Double = 1.0
 
-    init(noteStore: LiveNoteStore) {
+    init(noteStore: LiveNoteStore, onNoteSaved: ((String) -> Void)? = nil) {
         self.noteStore = noteStore
-        // Pulse animation handled by the red dot
+        self.onNoteSaved = onNoteSaved
     }
 }

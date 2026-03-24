@@ -18,6 +18,8 @@ struct NotesState {
     var tagFilter: String?
     /// Directory for the currently selected session (used for image loading).
     var selectedSessionDirectory: URL?
+    /// Whether the selected session has user-captured notes.
+    var hasUserNotes: Bool = false
 }
 
 enum CleanupStatus: Equatable {
@@ -96,6 +98,7 @@ final class NotesController {
 
     func selectSession(_ sessionID: String?) {
         state.selectedSessionID = sessionID
+        state.hasUserNotes = false
 
         guard let sessionID else {
             state.loadedNotes = nil
@@ -115,11 +118,13 @@ final class NotesController {
         Task {
             let notes = await coordinator.sessionRepository.loadNotes(sessionID: sessionID)
             let transcript = await coordinator.sessionRepository.loadTranscript(sessionID: sessionID)
+            let userNotesExist = await coordinator.sessionRepository.hasUserNotes(sessionID: sessionID)
 
             guard state.selectedSessionID == sessionID else { return }
 
             state.loadedNotes = notes
             state.loadedTranscript = transcript
+            state.hasUserNotes = userNotesExist
 
             let session = state.sessionHistory.first { $0.id == sessionID }
             if let snapID = session?.templateSnapshot?.id {
@@ -179,6 +184,57 @@ final class NotesController {
         coordinator.notesEngine.cancel()
         state.notesGenerationStatus = .idle
         state.streamingMarkdown = ""
+    }
+
+    // MARK: - Enhanced Notes (User Notes + Transcript Merge)
+
+    /// Check if user notes exist for a session.
+    func hasUserNotes(sessionID: String) async -> Bool {
+        await coordinator.sessionRepository.hasUserNotes(sessionID: sessionID)
+    }
+
+    /// Merge user notes with transcript to produce enriched notes.
+    func enhanceNotes(sessionID: String, settings: AppSettings) {
+        state.notesGenerationStatus = .generating
+        state.streamingMarkdown = ""
+
+        Task {
+            let userNotes = await coordinator.sessionRepository.loadUserNotes(sessionID: sessionID)
+            guard !userNotes.isEmpty else {
+                state.notesGenerationStatus = .error("No user notes found for this session")
+                return
+            }
+
+            let mergeEngine = NoteMergeEngine()
+            await mergeEngine.merge(
+                userNotes: userNotes,
+                transcript: state.loadedTranscript,
+                settings: settings
+            )
+
+            if !mergeEngine.generatedMarkdown.isEmpty {
+                let template = TemplateSnapshot(
+                    id: UUID(),
+                    name: "User-Enhanced",
+                    icon: "pencil.and.list.clipboard",
+                    systemPrompt: ""
+                )
+                let notes = EnhancedNotes(
+                    template: template,
+                    generatedAt: Date(),
+                    markdown: mergeEngine.generatedMarkdown
+                )
+                await coordinator.sessionRepository.saveNotes(sessionID: sessionID, notes: notes)
+                state.loadedNotes = notes
+
+                await loadHistory()
+                state.notesGenerationStatus = .completed
+            } else if let error = mergeEngine.error {
+                state.notesGenerationStatus = .error(error)
+            } else {
+                state.notesGenerationStatus = .idle
+            }
+        }
     }
 
     // MARK: - Image Insertion

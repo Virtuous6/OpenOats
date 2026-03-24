@@ -686,9 +686,12 @@ struct NotesView: View {
 
     private func notesEmptyState(controller: NotesController, state: NotesState, sessionID: String) -> some View {
         ContentUnavailableView {
-            Label("Generate Notes", systemImage: "sparkles")
+            Label(state.hasUserNotes ? "Enhance Notes" : "Generate Notes",
+                  systemImage: state.hasUserNotes ? "pencil.and.list.clipboard" : "sparkles")
         } description: {
-            Text("Summarize this transcript into structured meeting notes.")
+            Text(state.hasUserNotes
+                 ? "Merge your notes with the transcript into enriched meeting notes."
+                 : "Summarize this transcript into structured meeting notes.")
         } actions: {
             if case .error(let error) = state.notesGenerationStatus {
                 Text(error)
@@ -696,12 +699,23 @@ struct NotesView: View {
                     .font(.system(size: 12))
             }
 
+            if state.hasUserNotes {
+                Button {
+                    controller.enhanceNotes(sessionID: sessionID, settings: settings)
+                } label: {
+                    Label("Enhance Notes", systemImage: "pencil.and.list.clipboard")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(state.loadedTranscript.isEmpty)
+                .accessibilityIdentifier("notes.enhanceButton")
+            }
+
             Button {
                 controller.generateNotes(sessionID: sessionID, settings: settings)
             } label: {
                 Label("Generate Notes", systemImage: "sparkles")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .disabled(state.loadedTranscript.isEmpty)
             .accessibilityIdentifier("notes.generateButton")
         }
