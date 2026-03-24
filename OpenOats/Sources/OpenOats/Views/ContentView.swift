@@ -420,6 +420,8 @@ struct ContentView: View {
             controller?.saveQuickNote(text: text)
         }
         notepadOverlayManager.toggle(content: content)
+        // Hide standard window buttons — notepad is a utility panel
+        notepadOverlayManager.hideWindowButtons()
     }
 
     private func copyTranscript() {

@@ -19,7 +19,7 @@ final class LiveNoteStore {
         set { withMutation(keyPath: \.isActive) { _isActive = newValue } }
     }
 
-    private var sessionStartTime: Date?
+    private(set) var sessionStartTime: Date?
 
     /// Start a new note-taking session. Clears previous notes.
     func start(sessionStartTime: Date = .now) {

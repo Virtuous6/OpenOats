@@ -63,4 +63,11 @@ final class OverlayManager: ObservableObject {
     var isVisible: Bool {
         panel?.isVisible == true
     }
+
+    /// Hide the standard close/minimize/zoom buttons on the panel.
+    func hideWindowButtons() {
+        panel?.standardWindowButton(.closeButton)?.isHidden = true
+        panel?.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel?.standardWindowButton(.zoomButton)?.isHidden = true
+    }
 }

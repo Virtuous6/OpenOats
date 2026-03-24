@@ -35,7 +35,7 @@ struct LiveNotePadView: View {
                         Circle()
                             .fill(.red)
                             .frame(width: 6, height: 6)
-                            .opacity(pulseOpacity)
+                            .opacity(1.0)
                         Text(elapsedLabel)
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundStyle(.red)
@@ -113,6 +113,10 @@ struct LiveNotePadView: View {
         .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
         .onAppear {
             isInputFocused = true
+            timerTick = .now
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now in
+            timerTick = now
         }
     }
 
@@ -124,18 +128,18 @@ struct LiveNotePadView: View {
         inputText = ""
     }
 
-    // MARK: - Elapsed Time
-
-    @State private var now = Date()
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    // MARK: - Live Elapsed Timer
 
     private var elapsedLabel: String {
-        // Placeholder — actual elapsed calculated from session start
-        let count = noteStore.count
-        return count > 0 ? (noteStore.notes.last?.elapsedLabel ?? "00:00") : "00:00"
+        guard let start = noteStore.sessionStartTime else { return "00:00" }
+        let elapsed = timerTick.timeIntervalSince(start)
+        let minutes = Int(elapsed) / 60
+        let seconds = Int(elapsed) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    @State private var pulseOpacity: Double = 1.0
+    /// Ticks every second to drive elapsed time display.
+    @State private var timerTick = Date()
 
     init(noteStore: LiveNoteStore, onNoteSaved: ((String) -> Void)? = nil) {
         self.noteStore = noteStore
