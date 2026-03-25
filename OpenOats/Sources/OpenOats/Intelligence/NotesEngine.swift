@@ -100,9 +100,13 @@ final class NotesEngine {
 
         if !userNotes.isEmpty {
             let notesText = userNotes.map { "\($0.elapsedLabel) \($0.text)" }.joined(separator: "\n")
-            userPrompt += "\n\n---\n\nThe user also took these personal notes during the meeting. " +
-                "Incorporate them into the generated notes — they indicate what the user found important. " +
-                "Expand each note with relevant context from the transcript:\n\n\(notesText)"
+            userPrompt += "\n\n---\n\nThe user took these personal notes during the meeting:\n\n\(notesText)" +
+                "\n\nIMPORTANT: You MUST include a '## Your Notes (Enhanced)' section in the output. " +
+                "List each of the user's notes as a bullet point, followed by expanded context from the transcript. " +
+                "Format each as: '- **[MM:SS] original note** — expanded detail from transcript'. " +
+                "This section should appear BEFORE the regular meeting notes sections. " +
+                "Then continue with the rest of the report as normal (using the template structure). " +
+                "The user's notes should also inform the rest of the report — prioritize topics they noted."
         }
 
         userPrompt += "\n\nGenerate the meeting notes in markdown:"
