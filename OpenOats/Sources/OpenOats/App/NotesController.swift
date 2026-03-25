@@ -20,6 +20,10 @@ struct NotesState {
     var selectedSessionDirectory: URL?
     /// Whether the selected session has user-captured notes.
     var hasUserNotes: Bool = false
+    /// Number of user notes for the selected session.
+    var userNoteCount: Int = 0
+    /// Loaded user notes for the "My Notes" tab.
+    var loadedUserNotes: [UserNote] = []
 }
 
 enum CleanupStatus: Equatable {
@@ -124,7 +128,12 @@ final class NotesController {
 
             state.loadedNotes = notes
             state.loadedTranscript = transcript
+            let loadedUserNotes = userNotesExist
+                ? await coordinator.sessionRepository.loadUserNotes(sessionID: sessionID)
+                : []
             state.hasUserNotes = userNotesExist
+            state.userNoteCount = loadedUserNotes.count
+            state.loadedUserNotes = loadedUserNotes
 
             let session = state.sessionHistory.first { $0.id == sessionID }
             if let snapID = session?.templateSnapshot?.id {
@@ -146,10 +155,14 @@ final class NotesController {
         state.streamingMarkdown = ""
 
         Task {
+            // Load user notes if they exist — they'll be injected into the prompt
+            let userNotes = await coordinator.sessionRepository.loadUserNotes(sessionID: sessionID)
+
             await coordinator.notesEngine.generate(
                 transcript: state.loadedTranscript,
                 template: template,
-                settings: settings
+                settings: settings,
+                userNotes: userNotes
             )
 
             if !coordinator.notesEngine.generatedMarkdown.isEmpty {

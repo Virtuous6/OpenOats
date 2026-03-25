@@ -37,10 +37,13 @@ final class NotesEngine {
     }
 
     /// Streams note generation from the LLM, updating `generatedMarkdown` in real time.
+    /// When `userNotes` are provided, they're injected into the prompt so the LLM
+    /// incorporates personal notes into the generated output.
     func generate(
         transcript: [SessionRecord],
         template: MeetingTemplate,
-        settings: AppSettings
+        settings: AppSettings,
+        userNotes: [UserNote] = []
     ) async {
         currentTask?.cancel()
         isGenerating = true
@@ -92,9 +95,21 @@ final class NotesEngine {
         }
 
         let transcriptText = formatTranscript(transcript)
+
+        var userPrompt = "Here is the meeting transcript:\n\n\(transcriptText)"
+
+        if !userNotes.isEmpty {
+            let notesText = userNotes.map { "\($0.elapsedLabel) \($0.text)" }.joined(separator: "\n")
+            userPrompt += "\n\n---\n\nThe user also took these personal notes during the meeting. " +
+                "Incorporate them into the generated notes — they indicate what the user found important. " +
+                "Expand each note with relevant context from the transcript:\n\n\(notesText)"
+        }
+
+        userPrompt += "\n\nGenerate the meeting notes in markdown:"
+
         let messages: [OpenRouterClient.Message] = [
             .init(role: "system", content: template.systemPrompt),
-            .init(role: "user", content: "Here is the meeting transcript:\n\n\(transcriptText)\n\nGenerate the meeting notes in markdown:")
+            .init(role: "user", content: userPrompt)
         ]
 
         let task = Task { [weak self] in

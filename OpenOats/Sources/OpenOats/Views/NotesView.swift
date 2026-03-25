@@ -20,6 +20,7 @@ struct NotesView: View {
     enum DetailViewMode: String, CaseIterable {
         case transcript = "Transcript"
         case notes = "Notes"
+        case myNotes = "My Notes"
     }
 
     @State private var detailViewMode: DetailViewMode = .transcript
@@ -401,6 +402,8 @@ struct NotesView: View {
                         .keyboardShortcut("1", modifiers: .command)
                     Button("") { detailViewMode = .notes }
                         .keyboardShortcut("2", modifiers: .command)
+                    Button("") { detailViewMode = .myNotes }
+                        .keyboardShortcut("3", modifiers: .command)
                 }
                 .frame(width: 0, height: 0)
                 .opacity(0)
@@ -633,6 +636,8 @@ struct NotesView: View {
                 transcriptView(controller: controller, state: state)
             case .notes:
                 notesTab(controller: controller, state: state, sessionID: sessionID)
+            case .myNotes:
+                myNotesTab(controller: controller, state: state, sessionID: sessionID)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -648,6 +653,38 @@ struct NotesView: View {
                 notesContentView(notes, sessionDirectory: state.selectedSessionDirectory)
             } else {
                 notesEmptyState(controller: controller, state: state, sessionID: sessionID)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func myNotesTab(controller: NotesController, state: NotesState, sessionID: String) -> some View {
+        if state.loadedUserNotes.isEmpty {
+            ContentUnavailableView(
+                "No Personal Notes",
+                systemImage: "pencil.and.list.clipboard",
+                description: Text("Use Cmd+N during a recording to capture quick notes.")
+            )
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(state.loadedUserNotes) { note in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text(note.elapsedLabel)
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.blue)
+                            Text(note.text)
+                                .font(.system(size: 13))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.quaternary)
+                        .cornerRadius(8)
+                    }
+                }
+                .padding(16)
             }
         }
     }
@@ -686,11 +723,10 @@ struct NotesView: View {
 
     private func notesEmptyState(controller: NotesController, state: NotesState, sessionID: String) -> some View {
         ContentUnavailableView {
-            Label(state.hasUserNotes ? "Enhance Notes" : "Generate Notes",
-                  systemImage: state.hasUserNotes ? "pencil.and.list.clipboard" : "sparkles")
+            Label("Generate Notes", systemImage: "sparkles")
         } description: {
             Text(state.hasUserNotes
-                 ? "Merge your notes with the transcript into enriched meeting notes."
+                 ? "Generate notes from transcript + your \(state.userNoteCount) personal note\(state.userNoteCount == 1 ? "" : "s")."
                  : "Summarize this transcript into structured meeting notes.")
         } actions: {
             if case .error(let error) = state.notesGenerationStatus {
@@ -699,23 +735,13 @@ struct NotesView: View {
                     .font(.system(size: 12))
             }
 
-            if state.hasUserNotes {
-                Button {
-                    controller.enhanceNotes(sessionID: sessionID, settings: settings)
-                } label: {
-                    Label("Enhance Notes", systemImage: "pencil.and.list.clipboard")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(state.loadedTranscript.isEmpty)
-                .accessibilityIdentifier("notes.enhanceButton")
-            }
-
             Button {
                 controller.generateNotes(sessionID: sessionID, settings: settings)
             } label: {
-                Label("Generate Notes", systemImage: "sparkles")
+                Label(state.hasUserNotes ? "Generate Notes (+ My Notes)" : "Generate Notes",
+                      systemImage: "sparkles")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
             .disabled(state.loadedTranscript.isEmpty)
             .accessibilityIdentifier("notes.generateButton")
         }
@@ -798,6 +824,8 @@ struct NotesView: View {
             return state.loadedTranscript.isEmpty
         case .notes:
             return state.loadedNotes == nil
+        case .myNotes:
+            return !state.hasUserNotes
         }
     }
 
@@ -949,6 +977,8 @@ struct NotesView: View {
             }.joined(separator: "\n")
         case .notes:
             text = state.loadedNotes?.markdown ?? ""
+        case .myNotes:
+            text = state.loadedUserNotes.map { "\($0.elapsedLabel) \($0.text)" }.joined(separator: "\n")
         }
 
         NSPasteboard.general.clearContents()
