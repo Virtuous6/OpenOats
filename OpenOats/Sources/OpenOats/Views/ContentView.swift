@@ -295,7 +295,7 @@ struct ContentView: View {
 
             // Create and wire the controller
             let controller = LiveSessionController(coordinator: coordinator, container: container)
-            controller.onRunningStateChanged = { [weak miniBarManager] isRunning in
+            controller.onRunningStateChanged = { [weak miniBarManager, weak notepadOverlayManager] isRunning in
                 if isRunning {
                     miniBarManager?.state.onTap = {
                         if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == OpenOatsRootApp.mainWindowID }) {
@@ -306,6 +306,7 @@ struct ContentView: View {
                     showMiniBar(controller: controller, miniBarManager: miniBarManager)
                 } else {
                     miniBarManager?.hide()
+                    notepadOverlayManager?.hide()
                 }
             }
             controller.openNotesWindow = {
