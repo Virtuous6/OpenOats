@@ -47,10 +47,17 @@ struct LiveNotePadView: View {
 
             Divider()
 
-            // Saved notes list
-            if !noteStore.notes.isEmpty {
-                ScrollViewReader { proxy in
-                    ScrollView {
+            // Saved notes list (always visible — scrollable area)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    if noteStore.notes.isEmpty {
+                        Text("Notes you take will appear here")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 20)
+                    } else {
                         VStack(spacing: 6) {
                             ForEach(noteStore.notes) { note in
                                 HStack(alignment: .top, spacing: 8) {
@@ -72,11 +79,11 @@ struct LiveNotePadView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                     }
-                    .frame(maxHeight: 160)
-                    .onChange(of: noteStore.notes.count) { _, _ in
-                        if let last = noteStore.notes.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
+                }
+                .frame(minHeight: 80, maxHeight: 200)
+                .onChange(of: noteStore.notes.count) { _, _ in
+                    if let last = noteStore.notes.last {
+                        proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
             }

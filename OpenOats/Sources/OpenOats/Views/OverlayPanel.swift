@@ -50,8 +50,10 @@ final class OverlayManager: ObservableObject {
         if panel == nil {
             let rect = NSRect(x: 100, y: 100, width: 400, height: 300)
             if borderless {
-                let p = KeyableOverlayPanel(contentRect: rect, defaults: defaults)
+                let tallRect = NSRect(x: rect.origin.x, y: rect.origin.y, width: 400, height: 400)
+                let p = KeyableOverlayPanel(contentRect: tallRect, defaults: defaults)
                 p.styleMask = [.nonactivatingPanel, .fullSizeContentView]
+                p.setFrameAutosaveName("NotepadPanel")
                 panel = p
             } else {
                 panel = OverlayPanel(contentRect: rect, defaults: defaults)
