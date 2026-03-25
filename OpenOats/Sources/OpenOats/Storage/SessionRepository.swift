@@ -116,6 +116,9 @@ actor SessionRepository {
     private var liveFileHandle: FileHandle?
     private var liveUtteranceCount: Int = 0
 
+    /// Tracks mirrored file URLs per session to overwrite on re-mirror.
+    private var mirroredFileURLs: [String: URL] = [:]
+
     /// Tracks in-flight delayed writes.
     private var pendingWrites = 0
     private var pendingWriteWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1119,13 +1122,20 @@ actor SessionRepository {
             source: meta?.source
         )
 
-        // Write/update Markdown meeting notes
+        // If we already wrote a file for this session, delete it first (overwrite)
+        if let existingURL = mirroredFileURLs[sessionID] {
+            try? FileManager.default.removeItem(at: existingURL)
+        }
+
+        // Write Markdown meeting notes (transcript)
         if let fileURL = MarkdownMeetingWriter.write(
             metadata: .init(from: index),
             records: records,
             outputDirectory: outputDir
         ) {
-            // Append generated notes + user notes if they exist
+            mirroredFileURLs[sessionID] = fileURL
+
+            // Append user notes + generated notes to the same file
             var appendContent = ""
 
             let userNotes = loadUserNotes(sessionID: sessionID)
