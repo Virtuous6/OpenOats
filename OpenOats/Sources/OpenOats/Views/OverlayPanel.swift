@@ -59,6 +59,7 @@ final class OverlayManager: ObservableObject {
         }
 
         let hostingView = NSHostingView(rootView: content)
+        hostingView.sizingOptions = .intrinsicContentSize
         panel?.contentView = hostingView
         panel?.orderFront(nil)
         if borderless {
