@@ -131,9 +131,10 @@ final class LiveSessionController {
 
     // MARK: - Quick Notes
 
-    /// Save a user note and persist immediately for crash safety.
-    func saveQuickNote(text: String) {
-        guard let note = coordinator.liveNoteStore.append(text: text),
+    /// Persist the most recently appended user note to disk.
+    /// Called after LiveNoteStore.append() in the view — does NOT re-append.
+    func persistLastNote() {
+        guard let note = coordinator.liveNoteStore.notes.last,
               let sessionID = _currentSessionID else { return }
         Task {
             await coordinator.sessionRepository.appendUserNote(sessionID: sessionID, note: note)

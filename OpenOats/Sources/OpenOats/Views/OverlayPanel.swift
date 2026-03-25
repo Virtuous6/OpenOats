@@ -37,10 +37,16 @@ final class OverlayManager: ObservableObject {
     private var panel: OverlayPanel?
     var defaults: UserDefaults = .standard
 
+    /// If true, panel has no titlebar at all (for utility panels like notepad).
+    var borderless = false
+
     func show<Content: View>(content: Content) {
         if panel == nil {
             let rect = NSRect(x: 100, y: 100, width: 400, height: 300)
             panel = OverlayPanel(contentRect: rect, defaults: defaults)
+            if borderless {
+                panel?.styleMask = [.nonactivatingPanel, .fullSizeContentView]
+            }
         }
 
         let hostingView = NSHostingView(rootView: content)

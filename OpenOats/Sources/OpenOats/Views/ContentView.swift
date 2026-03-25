@@ -319,6 +319,7 @@ struct ContentView: View {
 
             overlayManager.defaults = container.defaults
             notepadOverlayManager.defaults = container.defaults
+            notepadOverlayManager.borderless = true
             miniBarManager.defaults = container.defaults
             await container.seedIfNeeded(coordinator: coordinator)
             controller.indexKBIfNeeded(settings: settings)
@@ -416,8 +417,8 @@ struct ContentView: View {
     private func toggleNotepad() {
         let noteStore = coordinator.liveNoteStore
         let controller = liveSessionController
-        let content = LiveNotePadView(noteStore: noteStore) { text in
-            controller?.saveQuickNote(text: text)
+        let content = LiveNotePadView(noteStore: noteStore) { _ in
+            controller?.persistLastNote()
         }
         notepadOverlayManager.toggle(content: content)
         // Hide standard window buttons — notepad is a utility panel
