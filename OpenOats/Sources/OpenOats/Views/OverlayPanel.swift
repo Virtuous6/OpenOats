@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// A floating NSPanel that is invisible to screen sharing.
-final class OverlayPanel: NSPanel {
+class OverlayPanel: NSPanel {
     init(contentRect: NSRect, defaults: UserDefaults = .standard) {
         super.init(
             contentRect: contentRect,
@@ -31,27 +31,39 @@ final class OverlayPanel: NSPanel {
     }
 }
 
+/// A floating panel that CAN become key window (for text input).
+final class KeyableOverlayPanel: OverlayPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 /// Manages the overlay panel lifecycle.
 @MainActor
 final class OverlayManager: ObservableObject {
     private var panel: OverlayPanel?
     var defaults: UserDefaults = .standard
 
-    /// If true, panel has no titlebar at all (for utility panels like notepad).
+    /// If true, panel has no titlebar and accepts keyboard input.
     var borderless = false
 
     func show<Content: View>(content: Content) {
         if panel == nil {
             let rect = NSRect(x: 100, y: 100, width: 400, height: 300)
-            panel = OverlayPanel(contentRect: rect, defaults: defaults)
             if borderless {
-                panel?.styleMask = [.nonactivatingPanel, .fullSizeContentView]
+                let p = KeyableOverlayPanel(contentRect: rect, defaults: defaults)
+                p.styleMask = [.nonactivatingPanel, .fullSizeContentView]
+                panel = p
+            } else {
+                panel = OverlayPanel(contentRect: rect, defaults: defaults)
             }
         }
 
         let hostingView = NSHostingView(rootView: content)
         panel?.contentView = hostingView
         panel?.orderFront(nil)
+        if borderless {
+            panel?.makeKey()
+        }
     }
 
     func hide() {
