@@ -1100,6 +1100,8 @@ actor SessionRepository {
     // MARK: - Notes Folder Mirroring
 
     /// Mirror notes.md and plain-text transcript to the user-visible notesFolderPath.
+    /// Layout: frontmatter → title → My Notes → Generated Notes → Transcript
+    /// (short sections first, long transcript last)
     private func mirrorNotesArtifacts(sessionID: String) {
         guard let outputDir = notesFolderPath else { return }
 
@@ -1127,37 +1129,54 @@ actor SessionRepository {
             try? FileManager.default.removeItem(at: existingURL)
         }
 
-        // Write Markdown meeting notes (transcript)
-        if let fileURL = MarkdownMeetingWriter.write(
-            metadata: .init(from: index),
-            records: records,
-            outputDirectory: outputDir
-        ) {
+        // Build full content: frontmatter + title + notes (short) + transcript (long)
+        let writerMeta = MarkdownMeetingWriter.Metadata(from: index)
+        let resolvedTitle = writerMeta.title?.isEmpty == false ? writerMeta.title! : "Meeting"
+        let frontmatter = MarkdownMeetingWriter.buildFrontmatter(
+            metadata: writerMeta, records: records, title: resolvedTitle
+        )
+
+        var parts: [String] = [frontmatter, "", "# \(resolvedTitle)", ""]
+
+        // My Notes first (short, sporadic)
+        let userNotes = loadUserNotes(sessionID: sessionID)
+        if !userNotes.isEmpty {
+            parts.append("## My Notes")
+            parts.append("")
+            for note in userNotes {
+                parts.append("- \(note.elapsedLabel) \(note.text)")
+            }
+            parts.append("")
+        }
+
+        // Generated Notes next (medium)
+        if let notes = loadNotes(sessionID: sessionID) {
+            parts.append("## Generated Notes")
+            parts.append("")
+            parts.append(notes.markdown)
+            parts.append("")
+        }
+
+        // Transcript last (long)
+        parts.append("## Transcript")
+        parts.append("")
+        parts.append(MarkdownMeetingWriter.formatTranscriptLines(records: records, startedAt: writerMeta.startedAt))
+
+        let content = parts.joined(separator: "\n")
+
+        // Write with collision-safe filename
+        let fm = FileManager.default
+        try? fm.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let fileURL = MarkdownMeetingWriter.resolveFilename(
+            title: writerMeta.title, startedAt: writerMeta.startedAt, directory: outputDir
+        )
+
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
             mirroredFileURLs[sessionID] = fileURL
-
-            // Append user notes + generated notes to the same file
-            var appendContent = ""
-
-            let userNotes = loadUserNotes(sessionID: sessionID)
-            if !userNotes.isEmpty {
-                appendContent += "\n\n## My Notes\n\n"
-                for note in userNotes {
-                    appendContent += "- \(note.elapsedLabel) \(note.text)\n"
-                }
-            }
-
-            if let notes = loadNotes(sessionID: sessionID) {
-                appendContent += "\n\n## Generated Notes\n\n"
-                appendContent += notes.markdown
-            }
-
-            if !appendContent.isEmpty {
-                if let handle = try? FileHandle(forWritingTo: fileURL) {
-                    handle.seekToEndOfFile()
-                    handle.write(Data(appendContent.utf8))
-                    try? handle.close()
-                }
-            }
+        } catch {
+            repoLog.error("Mirror write failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

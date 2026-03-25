@@ -52,7 +52,8 @@ final class OverlayManager: ObservableObject {
             if borderless {
                 let tallRect = NSRect(x: rect.origin.x, y: rect.origin.y, width: 400, height: 400)
                 let p = KeyableOverlayPanel(contentRect: tallRect, defaults: defaults)
-                p.styleMask = [.nonactivatingPanel, .fullSizeContentView]
+                p.styleMask = [.nonactivatingPanel]
+                p.hasShadow = false  // SwiftUI view handles its own shadow
                 p.setFrameAutosaveName("NotepadPanel")
                 panel = p
             } else {
