@@ -1120,11 +1120,35 @@ actor SessionRepository {
         )
 
         // Write/update Markdown meeting notes
-        MarkdownMeetingWriter.write(
+        if let fileURL = MarkdownMeetingWriter.write(
             metadata: .init(from: index),
             records: records,
             outputDirectory: outputDir
-        )
+        ) {
+            // Append generated notes + user notes if they exist
+            var appendContent = ""
+
+            let userNotes = loadUserNotes(sessionID: sessionID)
+            if !userNotes.isEmpty {
+                appendContent += "\n\n## My Notes\n\n"
+                for note in userNotes {
+                    appendContent += "- \(note.elapsedLabel) \(note.text)\n"
+                }
+            }
+
+            if let notes = loadNotes(sessionID: sessionID) {
+                appendContent += "\n\n## Generated Notes\n\n"
+                appendContent += notes.markdown
+            }
+
+            if !appendContent.isEmpty {
+                if let handle = try? FileHandle(forWritingTo: fileURL) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(appendContent.utf8))
+                    try? handle.close()
+                }
+            }
+        }
     }
 
     // MARK: - Spotlight
