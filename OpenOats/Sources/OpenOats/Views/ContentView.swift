@@ -154,18 +154,12 @@ struct ContentView: View {
                 Divider()
             }
 
-            // Main content: Suggestions
-            VStack(alignment: .leading, spacing: 0) {
-                Text("SUGGESTIONS")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .tracking(1.5)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
-                SuggestionsView(
+            // Main content: Intelligence Panel
+            if let intel = coordinator.intelligenceEngine {
+                IntelligencePanelView(
+                    intelligenceEngine: intel,
                     suggestions: controllerState.suggestions,
-                    isGenerating: controllerState.isGeneratingSuggestions
+                    isGeneratingSuggestions: controllerState.isGeneratingSuggestions
                 )
             }
 

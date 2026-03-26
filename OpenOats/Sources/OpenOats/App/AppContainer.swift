@@ -143,9 +143,17 @@ final class AppContainer {
             )
         }
 
+        let intelligenceEngine = IntelligenceEngine(
+            transcriptStore: coordinator.transcriptStore,
+            settings: settings
+        )
+        // Wire intelligence engine reference so SuggestionEngine can gate on mode
+        suggestionEngine.intelligenceEngine = intelligenceEngine
+
         return AppServices(
             knowledgeBase: knowledgeBase,
             suggestionEngine: suggestionEngine,
+            intelligenceEngine: intelligenceEngine,
             transcriptionEngine: transcriptionEngine,
             refinementEngine: TranscriptRefinementEngine(
                 settings: settings,
@@ -167,7 +175,8 @@ final class AppContainer {
         coordinator.batchEngine = services.batchEngine
         coordinator.setViewServices(
             knowledgeBase: services.knowledgeBase,
-            suggestionEngine: services.suggestionEngine
+            suggestionEngine: services.suggestionEngine,
+            intelligenceEngine: services.intelligenceEngine
         )
     }
 
