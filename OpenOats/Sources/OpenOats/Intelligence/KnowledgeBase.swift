@@ -458,32 +458,51 @@ final class KnowledgeBase {
 
     private func embedInBatches(texts: [String]) async -> (embeddings: [[Float]]?, error: String?) {
         let batchSize = 32
-        var allEmbeddings: [[Float]] = []
-
-        for batchStart in stride(from: 0, to: texts.count, by: batchSize) {
-            let batchEnd = min(batchStart + batchSize, texts.count)
-            let batch = Array(texts[batchStart..<batchEnd])
-
-            indexingProgress = "Embedding \(batchStart + 1)-\(batchEnd) of \(texts.count)..."
-
-            var retried = false
-            while true {
-                do {
-                    let embeddings = try await embedTexts(batch, inputType: "document")
-                    allEmbeddings.append(contentsOf: embeddings)
-                    break
-                } catch {
-                    if !retried {
-                        retried = true
-                        try? await Task.sleep(for: .seconds(1))
-                        continue
-                    }
-                    return (nil, error.localizedDescription)
-                }
-            }
+        let batches: [(index: Int, texts: [String])] = stride(from: 0, to: texts.count, by: batchSize).map { start in
+            let end = min(start + batchSize, texts.count)
+            return (index: start / batchSize, texts: Array(texts[start..<end]))
         }
 
-        return (allEmbeddings, nil)
+        indexingProgress = "Embedding \(texts.count) chunks in \(batches.count) parallel batches..."
+
+        // Run all embedding batches in parallel
+        do {
+            let results = try await withThrowingTaskGroup(
+                of: (index: Int, embeddings: [[Float]]).self
+            ) { group in
+                for batch in batches {
+                    group.addTask {
+                        var retried = false
+                        while true {
+                            do {
+                                let embeddings = try await self.embedTexts(batch.texts, inputType: "document")
+                                return (index: batch.index, embeddings: embeddings)
+                            } catch {
+                                if !retried {
+                                    retried = true
+                                    try await Task.sleep(for: .seconds(1))
+                                    continue
+                                }
+                                throw error
+                            }
+                        }
+                    }
+                }
+
+                var collected: [(index: Int, embeddings: [[Float]])] = []
+                for try await result in group {
+                    collected.append(result)
+                }
+                return collected
+            }
+
+            // Reassemble in original order
+            let ordered = results.sorted { $0.index < $1.index }
+            let allEmbeddings = ordered.flatMap(\.embeddings)
+            return (allEmbeddings, nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
     }
 
     // MARK: - Vector Math
