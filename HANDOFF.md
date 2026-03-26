@@ -1,62 +1,72 @@
 # OpenOats (Fork) — Handoff
 **Date:** 2026-03-26
-**Session:** Merged live-notepad into main, shipped 4 feature PRs via parallel worktrees
+**Session:** Shipped 5 PRs (DTLN-AEC, retranscribe, notepad, intel hardening, intelligence panel), rebuilt twice
 
 ---
 
 ## TL;DR
 
-All custom work merged to `main`, 4 new PRs shipped (DTLN-AEC, re-transcribe button, notepad fixes, intelligence hardening), app rebuilt and installed — ready for live Zoom testing.
+All custom work on `main`, 315 tests pass, intelligence panel with 4 modes (off/passive/query/analyze) is built and installed. DTLN-AEC integrated. Ready for live Zoom testing.
 
 ---
 
 ## What's Done (This Session)
 
-- **Merged `joe/live-notepad` → `main`** — fast-forward merge, pushed to origin. All custom code (live notepad, mirror, note merge) now on `main`
-- **PR #1: DTLN-AEC neural echo cancellation** — `EchoCanceller.swift` wraps dtln-aec-coreml (256-unit model), wired into `TranscriptionEngine`. System audio feeds far-end, mic audio transformed before transcription. Recording gets raw audio, transcriber gets cleaned audio
-- **PR #2: Notepad panel fixes** — `OverlayPanel.swift` changed from `.nonactivatingPanel` + floating to `.resizable` + `.normal` level. No longer always-on-top, now resizable
-- **PR #3: Re-transcribe button** — `NotesController.swift` + `NotesView.swift`. "Re-transcribe" button (wand.and.stars icon) in Notes toolbar. Checks audio availability on session select, runs BatchTranscriptionEngine, shows progress, reloads transcript on completion
-- **PR #4: Intelligence hardening** — 6 fixes across `SuggestionEngine`, `OpenRouterClient`, `KnowledgeBase`, `TranscriptRefinementEngine`: gate before KB, 30s timeout, circuit breaker, heuristic skip, parallel embeddings, model fix
-- **Cleaned up** — all 4 worktrees removed, all feature branches deleted (local + remote), `joe/fix-suggestion-trigger` still exists (pre-existing)
-- **Built and installed** — `SKIP_SIGN=1 scripts/build_swift_app.sh` → `/Applications/OpenOats.app`
+- **Merged `joe/live-notepad` → `main`** — fast-forward, all custom code now on `main`
+- **PR #1: DTLN-AEC echo cancellation** — `Audio/EchoCanceller.swift`, wired into `TranscriptionEngine`. Neural AEC replaces force-disabled Apple AEC.
+- **PR #2: Notepad fixes** — `Views/OverlayPanel.swift` — normal window level + resizable
+- **PR #3: Re-transcribe button** — `App/NotesController.swift` + `Views/NotesView.swift` — wand.and.stars button, progress, transcript reload
+- **PR #4: Intelligence hardening** — 6 fixes: gate before KB, 30s timeout, circuit breaker, heuristic skip, parallel embeddings, model fix
+- **PR #5: Intelligence panel** — `Intelligence/IntelligenceEngine.swift` + `Views/IntelligencePanelView.swift`. 4-mode panel replaces fixed suggestions section. SuggestionEngine gated on mode == .passive.
+- **Credential validation** — `hasValidCredentials` guard on query/analyze. Shows error instead of 401.
+- **Raised transcript context** — 50 → 200 utterances for query/analyze (~100 min coverage)
+- **18 new tests** — `Tests/OpenOatsTests/IntelligenceEngineTests.swift` covering all intelligence flows
+- **Cleaned up** — all worktrees removed, all feature branches deleted, 315 tests pass
+- **Built and installed twice** — `/Applications/OpenOats.app` has latest code
+- **Updated memory** — `project_openoats_intelligence_vision.md` + `reference_openoats_transcripts.md` updated with all new features and future roadmap
 
 ---
 
 ## What's Next
 
-### Priority 1: Test DTLN-AEC Live
-**What:** Do a Zoom call without headphones. Check `/tmp/openoats.log` for `[ENGINE-AEC]` entries. Compare speaker attribution before/after. Verify `dihard3` variant helps.
-**Files:** Check logs only — no code changes
-**Depends on:** Joe relaunching OpenOats after build
+### Priority 1: Test DTLN-AEC + dihard3 Live
+**What:** Zoom call without headphones. Check `/tmp/openoats.log` for `[ENGINE-AEC]`. Compare speaker attribution.
+**Files:** Logs only
+**Depends on:** Joe relaunching OpenOats
 
-### Priority 2: Headphone Detection
-**What:** Detect headphone state via CoreAudio transport type. Skip AEC when headphones connected (no echo to cancel, saves CPU).
-**Files:** New utility or add to `TranscriptionEngine.swift`
+### Priority 2: Test Intelligence Panel Live
+**What:** Use Query and Analyze modes during a real meeting. Verify responses are useful.
+**Files:** None — testing only
 **Depends on:** Nothing
 
-### Priority 3: Upstream Merge (1.30.2 → 1.32.2)
-**What:** `git fetch upstream && git merge upstream/main`. Manual conflict resolution needed in `SessionRepository.swift` (keep our mirror logic) and `LiveNotePadView.swift` (upstream deleted it, we keep it).
-**Key upstream features:** Audio playback in Notes window, auto-stop when meeting app exits, per-model flush intervals (Whisper 10s, Parakeet/Qwen 5s), download progress bar
-**Depends on:** Nothing, but test DTLN-AEC first to avoid compounding unknowns
-
-### Priority 4: Rewrite LLM Prompts
-**What:** All 4 intelligence prompts (state update, gate, generation, note merge) need concrete examples, schema specs, edge case handling, gate score anchoring, format matching `parseBullets()`, length constraints for headlines
-**Files:** `Intelligence/SuggestionEngine.swift` (3 prompts), `Intelligence/NoteMergeEngine.swift` (1 prompt)
-**Depends on:** Pipeline hardening done (P4 shipped)
-
-### Priority 5: Fix Suggestion Trigger Detection
-**What:** Loosen hardcoded phrase matching — LLM-based or periodic trigger
-**Files:** `Intelligence/SuggestionEngine.swift:239-320`
-**Depends on:** Clean speaker attribution (DTLN-AEC shipped, needs testing)
-
-### Priority 6: Tests for Custom Code
-**What:** EchoCanceller, UserNote, LiveNoteStore, mirror logic, re-transcribe flow, notepad panel — no coverage yet
-**Files:** `Tests/OpenOatsTests/`
+### Priority 3: Query + Vault Context
+**What:** Wire KB search into query mode so "What did we decide about X?" searches vault + transcript, not just transcript. Reuse `KnowledgeBase.search()` from passive pipeline.
+**Files:** `Intelligence/IntelligenceEngine.swift`
 **Depends on:** Nothing
 
-### Priority 7: Intelligence Vision (Future)
-**What:** Transform suggestions panel from passive-only to 3-mode intelligence surface: passive (tune), active LLM query (type question mid-meeting), analytical prompts (one-click "suggest questions")
-**Depends on:** Priorities 4-5 (prompts + triggers fixed first)
+### Priority 4: Analyze → Persist to TaskNotes
+**What:** "Save" button on analyze results that writes action items/decisions to TaskNotes API or triage board. Bridges real-time → PA routing.
+**Files:** `Views/IntelligencePanelView.swift`, new persistence logic
+**Depends on:** TaskNotes API running (Obsidian open)
+
+### Priority 5: Headphone Detection
+**What:** Skip AEC when headphones connected via CoreAudio transport type
+**Files:** `Transcription/TranscriptionEngine.swift` or new utility
+**Depends on:** Nothing
+
+### Priority 6: Upstream Merge (1.30.2 → 1.32.2)
+**What:** Audio playback, auto-stop, per-model flush intervals, download progress bar. Conflicts in `SessionRepository.swift` + `LiveNotePadView.swift`.
+**Depends on:** Nothing, but test DTLN-AEC first
+
+### Priority 7: Fix Passive Triggers + Prompts
+**What:** Loosen hardcoded phrase matching (LLM-based or periodic). Rewrite all 4 prompts with examples, schemas, score anchoring.
+**Files:** `Intelligence/SuggestionEngine.swift` (triggers + 3 prompts), `Intelligence/NoteMergeEngine.swift` (1 prompt)
+**Depends on:** Nothing
+
+### Priority 8: Contact-Aware Prompts + Prior Meeting Context
+**What:** Inject attendee contact cards into analyze prompts. Search prior sessions by attendee/topic.
+**Files:** `Intelligence/IntelligenceEngine.swift`
+**Depends on:** Contact cards exist, calendar integration
 
 ---
 
@@ -64,22 +74,22 @@ All custom work merged to `main`, 4 new PRs shipped (DTLN-AEC, re-transcribe but
 
 | Decision | Rationale |
 |----------|-----------|
-| Merge `joe/live-notepad` → `main` before branching features | Clean baseline for PRs, avoids branching off a feature branch |
-| Use git worktrees for parallel feature development | 4 independent features, dispatch agents in parallel, proper PR workflow |
-| DTLN-AEC uses `branch: "main"` not semver | No stable release yet (all beta tags), `main` is latest |
-| EchoCanceller outputs 16kHz buffers | StreamingTranscriber already resamples to 16kHz internally — AEC output takes the fast path, no double resampling |
-| Recording taps placed before AEC | Raw audio preserved in mic.caf/sys.caf for re-transcription; transcriber gets cleaned audio |
-| Gate moved before KB retrieval | Saves Voyage API calls — if gate rejects, KB search never fires |
-| Circuit breaker on OpenRouterClient actor | Actor-isolated state is clean, exponential backoff prevents hammering broken endpoints |
+| Intelligence panel replaces suggestions, not alongside | One surface, multiple modes — simpler UX than two panels |
+| Default mode is Off | Zero LLM cost until user opts in. Transcript still records. |
+| IntelligenceEngine separate from SuggestionEngine | Different paradigms: on-demand vs auto-pipeline. Shared OpenRouterClient but independent state. |
+| SuggestionEngine gated via weak ref to IntelligenceEngine | Avoids circular dependency. Gate check is one line. |
+| 200-utterance transcript window | ~100 min coverage. On-demand queries control cost. Can layer running summary later. |
+| Credential check is synchronous, before Task | Immediate user feedback, no wasted HTTP request |
+| Responses accumulate per session, no auto-clear | User sees history of queries/analyses. `clearResponses()` exists if needed. |
 
 ## Tech Debt
 
-- **Video lag during batch transcription** — WhisperKit large-v3-turbo saturates ANE/GPU via CoreML. Consider lower priority or idle detection.
-- **Magic number gate thresholds** (0.72, 0.75, 0.70, 0.65) — should be named constants
-- **Dead fields**: `Suggestion.summarySnapshot`, `SuggestionDecision.reason`, `Suggestion.feedback` — tracked but never used
-- **No correlation IDs** on LLM calls — hard to trace a suggestion's pipeline journey
-- **Crude transcript truncation** in NoteMergeEngine (head+tail, drops middle)
-- **Pre-existing warnings** — `StreamingTranscriber` SendableClosureCaptures, unnecessary `nonisolated(unsafe)` on DiarizationManager, unused `noteTimestamps` in NoteMergeEngine
+- **Mode doesn't persist across restart** — defaults to Off. Could store in UserDefaults if desired.
+- **Responses not persisted** — lost on app restart. Fine for now (meeting-length lifecycle).
+- **Speaker labels in transcript context** — diarized speakers show as "remote_0" not real names. Functional but ugly for LLM context.
+- **Video lag during batch transcription** — WhisperKit saturates ANE/GPU
+- **Magic number gate thresholds** — should be named constants
+- **Dead fields** in Suggestion model — tracked but never displayed
 
 ---
 
@@ -91,11 +101,11 @@ None.
 
 ## Open Questions
 
-1. Did `dihard3` actually improve speaker attribution on Joe's Zoom calls? (needs live testing)
-2. DTLN-AEC convergence ~0.3s — acceptable for first utterance?
-3. System audio from process tap — always 16kHz or variable? (EchoCanceller handles resampling either way, but good to know)
-4. Upstream deleted `LiveNotePadView.swift` — moved elsewhere or just removed? Check before merge.
-5. `joe/fix-suggestion-trigger` branch still exists on remote — stale? Delete?
+1. Did DTLN-AEC + dihard3 improve speaker attribution on Zoom? (needs live test)
+2. Is 200 utterances enough or should we add running summary for very long meetings?
+3. Should passive mode work without KB? (currently requires KB hit above 0.35)
+4. Upstream deleted `LiveNotePadView.swift` — why? Check before merge.
+5. `joe/fix-suggestion-trigger` branch still on remote — stale? Delete?
 
 ---
 
@@ -103,26 +113,30 @@ None.
 
 | File | Purpose |
 |------|---------|
-| `Sources/OpenOats/Audio/EchoCanceller.swift` | NEW — DTLN-AEC wrapper with resampling |
-| `Sources/OpenOats/Transcription/TranscriptionEngine.swift` | AEC wiring: model load, system feed, mic transform |
-| `Sources/OpenOats/App/NotesController.swift` | Re-transcribe logic + status tracking |
-| `Sources/OpenOats/Views/NotesView.swift` | Re-transcribe button UI |
-| `Sources/OpenOats/Views/OverlayPanel.swift` | Notepad panel window level + resizable fix |
-| `Sources/OpenOats/Intelligence/SuggestionEngine.swift` | Gate reorder + heuristic skip |
-| `Sources/OpenOats/Intelligence/OpenRouterClient.swift` | Timeout + circuit breaker |
-| `Sources/OpenOats/Intelligence/KnowledgeBase.swift` | Parallel embedding batches |
-| `Sources/OpenOats/Intelligence/TranscriptRefinementEngine.swift` | Model fix (reads user setting) |
-| `Package.swift` | Added dtln-aec-coreml dependency |
+| `Intelligence/IntelligenceEngine.swift` | NEW — query + analyze modes, credential validation, 200-utterance context |
+| `Views/IntelligencePanelView.swift` | NEW — mode picker tabs + mode-specific UI (off/passive/query/analyze) |
+| `Audio/EchoCanceller.swift` | NEW — DTLN-AEC wrapper with resampling |
+| `Intelligence/SuggestionEngine.swift` | Gate on mode == .passive, heuristic skip, gate before KB |
+| `Intelligence/OpenRouterClient.swift` | 30s timeout + circuit breaker |
+| `Intelligence/KnowledgeBase.swift` | Parallel embedding batches |
+| `Intelligence/TranscriptRefinementEngine.swift` | Uses user's selectedModel (was hardcoded gpt-4o-mini) |
+| `Transcription/TranscriptionEngine.swift` | AEC wiring + transformedStream helper |
+| `App/NotesController.swift` | Re-transcribe logic |
+| `Views/NotesView.swift` | Re-transcribe button UI |
+| `Views/OverlayPanel.swift` | Notepad normal level + resizable |
+| `Tests/OpenOatsTests/IntelligenceEngineTests.swift` | NEW — 18 tests for intelligence flows |
+| `Package.swift` | dtln-aec-coreml dependency (branch: main) |
 
 ---
 
 ## Suggested Next Session Flow
 
 1. `/pickup` — prime on OpenOats
-2. Confirm Joe tested DTLN-AEC live — did speaker attribution improve?
-3. If yes: add headphone detection (skip AEC when headphones connected)
-4. Upstream merge 1.30.2 → 1.32.2 (resolve SessionRepository + LiveNotePadView conflicts)
-5. Rewrite LLM prompts with examples, schemas, and score anchoring
-6. Fix suggestion trigger detection (LLM-based or periodic)
-7. Write tests for all custom code (EchoCanceller, re-transcribe, mirror, notepad)
-8. `/handoff`
+2. Confirm DTLN-AEC + dihard3 test results from Zoom call
+3. Confirm intelligence panel UX feedback from live use
+4. Wire KB search into query mode (Priority 3)
+5. Add "Save" button on analyze results → TaskNotes (Priority 4)
+6. Headphone detection (Priority 5)
+7. Upstream merge 1.30.2 → 1.32.2 (Priority 6)
+8. Fix passive triggers + rewrite prompts (Priority 7)
+9. `/handoff`
