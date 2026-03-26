@@ -3,7 +3,7 @@ import Observation
 
 /// Generates LLM-powered suggestions based on conversation context and KB results.
 ///
-/// Pipeline: heuristic filter → conversation state update → multi-query KB retrieval → surfacing gate → generation.
+/// Pipeline: heuristic filter → conversation state update → surfacing gate → KB retrieval → generation.
 @Observable
 @MainActor
 final class SuggestionEngine {
@@ -30,6 +30,12 @@ final class SuggestionEngine {
     private var currentTask: Task<Void, Never>?
     private var lastProcessedUtteranceID: UUID?
     private var lastSuggestionTime: Date?
+
+    // State update heuristic tracking (Fix 4)
+    private var lastStateUpdateSpeaker: Speaker?
+    private var lastStateUpdateTime: Date?
+    private let stateUpdateMinWordCount = 10
+    private let stateUpdateMinInterval: TimeInterval = 60
 
     // MARK: - Thresholds
 
@@ -137,30 +143,33 @@ final class SuggestionEngine {
             isGenerating = true
             defer { isGenerating = false }
 
-            // Stage 2: Update conversation state if needed
-            await updateConversationStateIfNeeded(
-                latestUtterance: utterance
-            )
+            // Stage 2: Update conversation state if needed (with heuristic skip)
+            if shouldUpdateConversationState(utterance) {
+                await updateConversationStateIfNeeded(
+                    latestUtterance: utterance
+                )
+                lastStateUpdateSpeaker = utterance.speaker
+                lastStateUpdateTime = .now
+            }
             guard !Task.isCancelled else { return }
 
-            // Stage 3: Multi-query KB retrieval
-            let kbResults = await retrieveEvidence(for: utterance)
-            guard !kbResults.isEmpty, !Task.isCancelled else { return }
-
-            let topScore = kbResults.first?.score ?? 0
-            guard topScore >= minKBRelevanceScore else { return }
-
-            // Stage 4: Surfacing gate
+            // Stage 3: Surfacing gate (runs BEFORE KB retrieval to avoid wasted API calls)
             let decision = await runSurfacingGate(
                 utterance: utterance,
-                trigger: trigger!,
-                kbResults: kbResults
+                trigger: trigger!
             )
             lastDecision = decision
             guard !Task.isCancelled else { return }
 
             guard let decision, decision.shouldSurface,
                   passesThresholds(decision) else { return }
+
+            // Stage 4: Multi-query KB retrieval (only if gate passed)
+            let kbResults = await retrieveEvidence(for: utterance)
+            guard !kbResults.isEmpty, !Task.isCancelled else { return }
+
+            let topScore = kbResults.first?.score ?? 0
+            guard topScore >= minKBRelevanceScore else { return }
 
             // Stage 5: Generate suggestion
             let suggestion = await generateSuggestion(
@@ -195,6 +204,27 @@ final class SuggestionEngine {
         lastProcessedUtteranceID = nil
         lastSuggestionTime = nil
         lastDecision = nil
+        lastStateUpdateSpeaker = nil
+        lastStateUpdateTime = nil
+    }
+
+    // MARK: - Stage 2 Heuristic: Skip trivial state updates
+
+    /// Skips conversation state LLM call for trivial utterances:
+    /// - Under 10 words (too little signal)
+    /// - Same speaker as last update AND less than 60s since last update (continuation)
+    private func shouldUpdateConversationState(_ utterance: Utterance) -> Bool {
+        let words = utterance.text.split(separator: " ")
+        guard words.count >= stateUpdateMinWordCount else { return false }
+
+        if let lastSpeaker = lastStateUpdateSpeaker,
+           let lastTime = lastStateUpdateTime,
+           utterance.speaker == lastSpeaker,
+           Date.now.timeIntervalSince(lastTime) < stateUpdateMinInterval {
+            return false
+        }
+
+        return true
     }
 
     // MARK: - Stage 1: Heuristic Pre-Filter
@@ -377,7 +407,7 @@ final class SuggestionEngine {
         let themGoals: [String]
     }
 
-    // MARK: - Stage 3: Multi-Query KB Retrieval
+    // MARK: - Stage 4: Multi-Query KB Retrieval (after gate passes)
 
     private func retrieveEvidence(for utterance: Utterance) async -> [KBResult] {
         let state = transcriptStore.conversationState
@@ -396,17 +426,15 @@ final class SuggestionEngine {
         return await knowledgeBase.search(queries: queries, topK: 5)
     }
 
-    // MARK: - Stage 4: Surfacing Gate
+    // MARK: - Stage 3: Surfacing Gate (before KB retrieval)
 
     private func runSurfacingGate(
         utterance: Utterance,
-        trigger: SuggestionTrigger,
-        kbResults: [KBResult]
+        trigger: SuggestionTrigger
     ) async -> SuggestionDecision? {
         let messages = buildGatePrompt(
             utterance: utterance,
-            trigger: trigger,
-            kbResults: kbResults
+            trigger: trigger
         )
 
         do {
@@ -544,8 +572,7 @@ final class SuggestionEngine {
 
     private func buildGatePrompt(
         utterance: Utterance,
-        trigger: SuggestionTrigger,
-        kbResults: [KBResult]
+        trigger: SuggestionTrigger
     ) -> [OpenRouterClient.Message] {
         let state = transcriptStore.conversationState
         let recentExchange = transcriptStore.recentExchange
@@ -554,12 +581,6 @@ final class SuggestionEngine {
         for u in recentExchange {
             let label = u.speaker.displayLabel
             conversationText += "\(label): \(u.text)\n"
-        }
-
-        var evidenceText = ""
-        for (i, result) in kbResults.prefix(5).enumerated() {
-            let header = result.headerContext.isEmpty ? result.sourceFile : "\(result.sourceFile) > \(result.headerContext)"
-            evidenceText += "[\(i + 1)] [\(header)] (score: \(String(format: "%.2f", result.score)))\n\(result.text)\n\n"
         }
 
         let recentAngles = state.suggestedAnglesRecentlyShown.joined(separator: "; ")
@@ -572,7 +593,6 @@ final class SuggestionEngine {
         - Stay silent unless the suggestion would be genuinely useful right now
         - Penalize generic advice
         - Penalize advice already obvious from the conversation
-        - Penalize weak or tangential KB matches
         - Penalize interruptions during loose or unfinished ideation
         - Only approve if the user could plausibly use the suggestion in the next one or two turns
         - One strong suggestion is better than four weak ones
@@ -597,8 +617,6 @@ final class SuggestionEngine {
         Detected trigger: \(trigger.kind.rawValue) (confidence: \(String(format: "%.2f", trigger.confidence)))
         Trigger excerpt: \(trigger.excerpt)
 
-        KB evidence:
-        \(evidenceText)
         Recently shown suggestion angles: \(recentAngles.isEmpty ? "none" : recentAngles)
 
         Should a suggestion be surfaced now? Output JSON:

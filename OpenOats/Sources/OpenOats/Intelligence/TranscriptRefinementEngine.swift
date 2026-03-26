@@ -12,8 +12,6 @@ actor TranscriptRefinementEngine {
     private var pendingQueue: [Utterance] = []
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
 
-    /// Hardcoded cheap model for refinement (keeps cost low).
-    private let refinementModel = "openai/gpt-4o-mini"
     private let minimumWordCount = 5
 
     private let systemPrompt = """
@@ -97,6 +95,7 @@ actor TranscriptRefinementEngine {
         // Read settings on MainActor
         let provider = await MainActor.run { settings.llmProvider }
         let openRouterKey = await MainActor.run { settings.openRouterApiKey }
+        let selectedModelName = await MainActor.run { settings.selectedModel }
         let ollamaURL = await MainActor.run { settings.ollamaBaseURL }
         let ollamaModel = await MainActor.run { settings.ollamaLLMModel }
         let mlxURL = await MainActor.run { settings.mlxBaseURL }
@@ -109,7 +108,7 @@ actor TranscriptRefinementEngine {
         case .openRouter:
             apiKey = openRouterKey.isEmpty ? nil : openRouterKey
             baseURL = nil
-            model = refinementModel
+            model = selectedModelName
         case .ollama:
             apiKey = nil
             guard let url = OpenRouterClient.chatCompletionsURL(from: ollamaURL) else {
