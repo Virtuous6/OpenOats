@@ -27,6 +27,7 @@ let package = Package(
         // TODO: Switch back to argmaxinc/WhisperKit once upstream relaxes the constraint.
         .package(url: "https://github.com/yazins-ai/WhisperKit.git", branch: "fix/swift-transformers-compat"),
         .package(url: "https://github.com/sindresorhus/LaunchAtLogin-Modern", from: "1.1.0"),
+        .package(url: "https://github.com/MimicScribe/dtln-aec-coreml.git", branch: "main"),
     ],
     targets: [
         .target(
@@ -36,6 +37,8 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "LaunchAtLogin", package: "LaunchAtLogin-Modern"),
+                .product(name: "DTLNAecCoreML", package: "dtln-aec-coreml"),
+                .product(name: "DTLNAec256", package: "dtln-aec-coreml"),
             ],
             path: "Sources/OpenOats",
             exclude: ["Info.plist", "OpenOats.entitlements", "Assets", "Resources"]

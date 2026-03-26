@@ -119,6 +119,9 @@ final class TranscriptionEngine {
     /// Speaker diarization manager for system audio (nil when diarization is disabled).
     private var diarizationManager: DiarizationManager?
 
+    /// Neural echo canceller (nil when AEC is disabled or models failed to load).
+    private var echoCanceller: EchoCanceller?
+
     /// Tracks the resolved mic device ID currently in use.
     private var currentMicDeviceID: AudioDeviceID = 0
 
@@ -256,6 +259,21 @@ final class TranscriptionEngine {
 
         guard let vadManager else { return }
 
+        // 1b. Initialize neural echo cancellation (DTLN-AEC)
+        if settings.enableEchoCancellation {
+            let aec = EchoCanceller()
+            do {
+                try await aec.loadModels()
+                echoCanceller = aec
+                diagLog("[ENGINE-AEC] DTLN-AEC loaded successfully")
+            } catch {
+                diagLog("[ENGINE-AEC] DTLN-AEC failed to load: \(error.localizedDescription), continuing without AEC")
+                echoCanceller = nil
+            }
+        } else {
+            echoCanceller = nil
+        }
+
         // 2. Start mic capture
         userSelectedDeviceID = inputDeviceID
         guard let targetMicID = resolvedMicDeviceID(for: inputDeviceID) else {
@@ -267,14 +285,11 @@ final class TranscriptionEngine {
             return
         }
         currentMicDeviceID = targetMicID
-        // AEC (voice processing) conflicts with system audio capture on macOS —
-        // both cause CoreAudio aggregate-device reconfiguration that can stall the
-        // mic stream. Since system audio capture is always active during recording,
-        // AEC must be disabled to prevent capture failures.
+        // Apple's hardware AEC (setVoiceProcessingEnabled) conflicts with the
+        // aggregate device used by SystemAudioCapture, causing deadlocks.
+        // Echo cancellation is handled by DTLN-AEC (neural, no CoreAudio interaction)
+        // which runs as a stream transform after capture — see startMicStream/startSystemAudioStream.
         let useAEC = false
-        if settings.enableEchoCancellation {
-            diagLog("[ENGINE-3] AEC disabled — conflicts with system audio capture")
-        }
 
         diagLog("[ENGINE-3] starting mic capture, targetMicID=\(String(describing: targetMicID)), aec=\(useAEC)")
         startMicStream(
@@ -496,6 +511,10 @@ final class TranscriptionEngine {
         }
         diarizationManager = nil
 
+        // Reset echo canceller state for next session
+        echoCanceller?.reset()
+        echoCanceller = nil
+
         micBackend = nil
         systemBackend = nil
         isRunning = false
@@ -624,6 +643,13 @@ final class TranscriptionEngine {
                 recorder.writeMicBuffer(buffer)
             }
         }
+        // Apply DTLN-AEC: process mic audio through neural echo cancellation.
+        // Recording tap above gets raw audio; transcriber below gets cleaned audio.
+        if let aec = echoCanceller {
+            micStream = Self.transformedStream(micStream) { buffer in
+                aec.processMicAudio(buffer)
+            }
+        }
         let store = transcriptStore
         guard let micTranscriber = makeTranscriber(
             locale: locale,
@@ -671,6 +697,13 @@ final class TranscriptionEngine {
         if let recorder = audioRecorder {
             sysStream = Self.tappedStream(sysStream) { buffer in
                 recorder.writeSysBuffer(buffer)
+            }
+        }
+        // Feed system audio to DTLN-AEC as far-end reference.
+        // This is a non-destructive tap — original buffer passes through unchanged.
+        if let aec = echoCanceller {
+            sysStream = Self.tappedStream(sysStream) { buffer in
+                aec.feedSystemAudio(buffer)
             }
         }
 
@@ -800,6 +833,26 @@ final class TranscriptionEngine {
                 tap(buffer)
                 nonisolated(unsafe) let b = buffer
                 continuation.yield(b)
+            }
+            continuation.finish()
+        }
+        return output
+    }
+
+    /// Wrap an audio stream to transform each buffer, dropping nil results (internal buffering).
+    private nonisolated static func transformedStream(
+        _ stream: AsyncStream<AVAudioPCMBuffer>,
+        transform: @escaping @Sendable (AVAudioPCMBuffer) -> AVAudioPCMBuffer?
+    ) -> AsyncStream<AVAudioPCMBuffer> {
+        struct Box: @unchecked Sendable { let stream: AsyncStream<AVAudioPCMBuffer> }
+        let box = Box(stream: stream)
+        let (output, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+        Task {
+            for await buffer in box.stream {
+                if let transformed = transform(buffer) {
+                    nonisolated(unsafe) let b = transformed
+                    continuation.yield(b)
+                }
             }
             continuation.finish()
         }
