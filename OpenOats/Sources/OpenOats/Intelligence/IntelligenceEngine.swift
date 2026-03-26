@@ -117,6 +117,10 @@ final class IntelligenceEngine {
     /// Submit a free-form question against the current transcript.
     func query(_ question: String) {
         guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard hasValidCredentials else {
+            appendResponse(prompt: question, text: "No LLM credentials configured. Check Settings.", kind: .query)
+            return
+        }
         currentTask?.cancel()
 
         currentTask = Task {
@@ -166,6 +170,14 @@ final class IntelligenceEngine {
 
     /// Run a preset analysis against the current transcript.
     func analyze(_ preset: AnalysisPreset) {
+        guard hasValidCredentials else {
+            appendResponse(
+                prompt: preset.rawValue,
+                text: "No LLM credentials configured. Check Settings.",
+                kind: .analysis(preset)
+            )
+            return
+        }
         currentTask?.cancel()
 
         currentTask = Task {
@@ -224,6 +236,22 @@ final class IntelligenceEngine {
         currentTask = nil
         responses = []
         isProcessing = false
+    }
+
+    // MARK: - Validation
+
+    /// Check that the current provider has usable credentials before firing an LLM call.
+    private var hasValidCredentials: Bool {
+        switch settings.llmProvider {
+        case .openRouter:
+            return !settings.openRouterApiKey.isEmpty
+        case .ollama:
+            return llmBaseURL != nil
+        case .mlx:
+            return llmBaseURL != nil
+        case .openAICompatible:
+            return llmBaseURL != nil
+        }
     }
 
     // MARK: - Private
