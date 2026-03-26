@@ -10,6 +10,7 @@ struct NotesState {
     var loadedNotes: EnhancedNotes?
     var notesGenerationStatus: GenerationStatus = .idle
     var cleanupStatus: CleanupStatus = .idle
+    var retranscribeStatus: RetranscribeStatus = .idle
     var selectedTemplate: MeetingTemplate?
     var showingOriginal: Bool = false
     /// Partial markdown streamed during generation.
@@ -24,6 +25,15 @@ struct NotesState {
     var userNoteCount: Int = 0
     /// Loaded user notes for the "My Notes" tab.
     var loadedUserNotes: [UserNote] = []
+}
+
+enum RetranscribeStatus: Equatable {
+    case idle
+    case checking
+    case transcribing(progress: Double)
+    case completed
+    case error(String)
+    case unavailable
 }
 
 enum CleanupStatus: Equatable {
@@ -116,8 +126,10 @@ final class NotesController {
         state.selectedSessionDirectory = coordinator.sessionRepository.sessionsDirectoryURL
             .appendingPathComponent(sessionID, isDirectory: true)
         state.showingOriginal = false
+        state.retranscribeStatus = .idle
         coordinator.cleanupEngine.cancel()
         syncCleanupStatus()
+        checkRetranscribeAvailability()
 
         Task {
             let notes = await coordinator.sessionRepository.loadNotes(sessionID: sessionID)
@@ -317,6 +329,72 @@ final class NotesController {
         syncCleanupStatus()
     }
 
+    // MARK: - Re-transcribe
+
+    /// Check whether batch audio files exist for the selected session.
+    func checkRetranscribeAvailability() {
+        guard let sessionID = state.selectedSessionID else {
+            state.retranscribeStatus = .unavailable
+            return
+        }
+        state.retranscribeStatus = .checking
+        Task {
+            let urls = await coordinator.sessionRepository.batchAudioURLs(sessionID: sessionID)
+            guard state.selectedSessionID == sessionID else { return }
+            let hasAudio = urls.mic != nil || urls.sys != nil
+            state.retranscribeStatus = hasAudio ? .idle : .unavailable
+        }
+    }
+
+    /// Re-run batch transcription on existing audio files for the selected session.
+    func retranscribe(settings: AppSettings) {
+        guard let sessionID = state.selectedSessionID,
+              let batchEngine = coordinator.batchEngine else { return }
+
+        let model = settings.batchTranscriptionModel
+        let locale = settings.locale
+        let notesDir = URL(fileURLWithPath: settings.notesFolderPath)
+        let repo = coordinator.sessionRepository
+        let diarize = settings.enableDiarization
+        let diarizeVariant = settings.diarizationVariant
+
+        state.retranscribeStatus = .transcribing(progress: 0)
+
+        Task.detached { [weak self] in
+            await batchEngine.process(
+                sessionID: sessionID,
+                model: model,
+                locale: locale,
+                sessionRepository: repo,
+                notesDirectory: notesDir,
+                enableDiarization: diarize,
+                diarizationVariant: diarizeVariant
+            )
+
+            await MainActor.run { [weak self] in
+                guard let self, self.state.selectedSessionID == sessionID else { return }
+                Task {
+                    let status = await batchEngine.status
+                    switch status {
+                    case .completed:
+                        self.state.retranscribeStatus = .completed
+                        // Reload transcript to show new results
+                        let transcript = await repo.loadTranscript(sessionID: sessionID)
+                        guard self.state.selectedSessionID == sessionID else { return }
+                        self.state.loadedTranscript = transcript
+                        self.syncCleanupStatus()
+                    case .failed(let message):
+                        self.state.retranscribeStatus = .error(message)
+                    case .cancelled:
+                        self.state.retranscribeStatus = .idle
+                    default:
+                        self.state.retranscribeStatus = .idle
+                    }
+                }
+            }
+        }
+    }
+
     func toggleShowingOriginal() {
         state.showingOriginal.toggle()
     }
@@ -406,6 +484,7 @@ final class NotesController {
                 guard let self else { return }
                 self.syncCleanupStatus()
                 self.syncGenerationStatus()
+                self.syncRetranscribeStatus()
                 try? await Task.sleep(for: .milliseconds(100))
             }
         }
@@ -439,5 +518,23 @@ final class NotesController {
             state.streamingMarkdown = engine.generatedMarkdown
         }
         // Don't override .error or .completed set by generateNotes
+    }
+
+    private func syncRetranscribeStatus() {
+        // Only sync progress while actively transcribing
+        guard case .transcribing = state.retranscribeStatus else { return }
+        guard let batchEngine = coordinator.batchEngine else { return }
+
+        Task {
+            let engineStatus = await batchEngine.status
+            switch engineStatus {
+            case .transcribing(let progress):
+                state.retranscribeStatus = .transcribing(progress: progress)
+            case .loading:
+                state.retranscribeStatus = .transcribing(progress: 0)
+            default:
+                break // Completion handled in retranscribe() callback
+            }
+        }
     }
 }
