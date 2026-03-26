@@ -61,6 +61,10 @@ final class SuggestionEngine {
     private let knowledgeBase: KnowledgeBase
     private let settings: AppSettings
 
+    /// Reference to intelligence engine for mode gating. When set and mode != .passive,
+    /// the suggestion pipeline is completely skipped (zero LLM calls).
+    weak var intelligenceEngine: IntelligenceEngine?
+
     init(transcriptStore: TranscriptStore, knowledgeBase: KnowledgeBase, settings: AppSettings) {
         self.transcriptStore = transcriptStore
         self.knowledgeBase = knowledgeBase
@@ -114,7 +118,11 @@ final class SuggestionEngine {
     }
 
     /// Called when any new utterance is finalized (local or remote).
+    /// Skipped entirely when intelligence mode is not `.passive` (zero LLM calls).
     func onNewUtterance(_ utterance: Utterance) {
+        // Gate: only run passive suggestions when intelligence mode is .passive
+        if let intel = intelligenceEngine, intel.mode != .passive { return }
+
         guard utterance.id != lastProcessedUtteranceID else { return }
         lastProcessedUtteranceID = utterance.id
 
