@@ -267,7 +267,7 @@ final class IntelligenceEngine {
     }
 
     private func buildTranscriptContext() -> String {
-        let utterances = transcriptStore.utterances.suffix(50)
+        let utterances = transcriptStore.utterances.suffix(200)
         guard !utterances.isEmpty else { return "" }
 
         return utterances.map { u in
