@@ -513,6 +513,48 @@ struct NotesView: View {
         case .cleaned:
             showOriginalButton(controller: controller, state: state)
         }
+
+        retranscribeButton(controller: controller, state: state)
+    }
+
+    @ViewBuilder
+    private func retranscribeButton(controller: NotesController, state: NotesState) -> some View {
+        switch state.retranscribeStatus {
+        case .unavailable, .checking:
+            EmptyView()
+
+        case .idle:
+            Button {
+                controller.retranscribe(settings: settings)
+            } label: {
+                Label("Re-transcribe", systemImage: "wand.and.stars")
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(.bordered)
+            .help("Re-run batch transcription from saved audio")
+
+        case .transcribing(let progress):
+            HStack(spacing: 6) {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .frame(width: 60)
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+        case .completed:
+            Label("Transcribed", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.green)
+
+        case .error(let message):
+            Label("Failed", systemImage: "exclamation.triangle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.red)
+                .help(message)
+        }
     }
 
     @ViewBuilder
