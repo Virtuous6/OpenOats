@@ -60,6 +60,16 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .help("View past meeting notes")
                 .accessibilityIdentifier("app.pastMeetingsButton")
+
+                SettingsLink {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12))
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Settings")
+                .accessibilityIdentifier("app.settingsButton")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -111,7 +121,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                     Text(controllerState.batchIsImporting
                          ? "Importing meeting recording… \(Int(progress * 100))%"
-                         : "Enhancing transcript... \(Int(progress * 100))%")
+                         : "Re-transcribing... \(Int(progress * 100))%")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -143,7 +153,7 @@ struct ContentView: View {
                         .font(.system(size: 12))
                     Text(controllerState.batchIsImporting
                          ? "Meeting recording imported"
-                         : "Transcript enhanced")
+                         : "Re-transcription complete")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -154,16 +164,17 @@ struct ContentView: View {
                 Divider()
             }
 
-            // Main content: Intelligence Panel
+            // Main content: Intelligence Panel (replaces upstream suggestion status bar)
             if let intel = coordinator.intelligenceEngine {
                 IntelligencePanelView(
                     intelligenceEngine: intel,
                     suggestions: controllerState.suggestions,
-                    isGeneratingSuggestions: controllerState.isGeneratingSuggestions
+                    isGeneratingSuggestions: controllerState.isGeneratingSuggestions,
+                    suggestionEngine: coordinator.suggestionEngine
                 )
             }
 
-            Divider()
+            Spacer(minLength: 0)
 
             // Collapsible transcript (hidden when live transcript is disabled)
             if controllerState.showLiveTranscript {
@@ -227,6 +238,8 @@ struct ContentView: View {
                 statusMessage: controllerState.statusMessage,
                 errorMessage: controllerState.errorMessage,
                 needsDownload: controllerState.needsDownload,
+                downloadProgress: controllerState.downloadProgress,
+                downloadDetail: controllerState.downloadDetail,
                 onToggle: {
                     pendingControlBarAction = .toggle
                 },
@@ -253,7 +266,10 @@ struct ContentView: View {
     private var contentWithOverlay: some View {
         sizedRootContent.overlay {
             if showOnboarding {
-                OnboardingView(isPresented: $showOnboarding)
+                SetupWizardView(
+                    isPresented: $showOnboarding,
+                    settings: settings
+                )
                     .transition(.opacity)
             }
             if showConsentSheet {
@@ -289,7 +305,7 @@ struct ContentView: View {
 
             // Create and wire the controller
             let controller = LiveSessionController(coordinator: coordinator, container: container)
-            controller.onRunningStateChanged = { [weak miniBarManager, weak notepadOverlayManager] isRunning in
+            controller.onRunningStateChanged = { [weak miniBarManager, weak notepadOverlayManager, weak overlayManager] isRunning in
                 if isRunning {
                     miniBarManager?.state.onTap = {
                         if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == OpenOatsRootApp.mainWindowID }) {
@@ -298,9 +314,19 @@ struct ContentView: View {
                         }
                     }
                     showMiniBar(controller: controller, miniBarManager: miniBarManager)
+                    // Start the selected realtime sidebar and show the overlay.
+                    if settings.sidebarMode == .classicSuggestions {
+                        coordinator.suggestionEngine?.startPreFetching()
+                    }
+                    if settings.suggestionPanelEnabled {
+                        showSidebarContent()
+                    }
                 } else {
                     miniBarManager?.hide()
                     notepadOverlayManager?.hide()
+                    // Stop the classic pre-fetcher and hide the panel after delay.
+                    coordinator.suggestionEngine?.stopPreFetching()
+                    overlayManager?.hideAfterDelay(seconds: 2)
                 }
             }
             controller.openNotesWindow = {
@@ -343,6 +369,15 @@ struct ContentView: View {
                 container.disableDetection(coordinator: coordinator)
             }
         }
+        .onChange(of: settings.sidebarMode) {
+            if settings.sidebarMode == .classicSuggestions {
+                coordinator.suggestionEngine?.startPreFetching()
+            } else {
+                coordinator.suggestionEngine?.stopPreFetching()
+            }
+            guard liveSessionController?.state.isRunning == true, settings.suggestionPanelEnabled else { return }
+            showSidebarContent()
+        }
     }
 
     private var contentWithEventHandlers: some View {
@@ -365,6 +400,9 @@ struct ContentView: View {
                 }
                 return event
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleSuggestionPanel)) { _ in
+            toggleOverlay()
         }
         .onChange(of: pendingControlBarAction) {
             guard let action = pendingControlBarAction else { return }
@@ -400,13 +438,25 @@ struct ContentView: View {
     }
 
     private func toggleOverlay() {
-        guard let controller = liveSessionController else { return }
-        let content = OverlayContent(
-            suggestions: controller.state.suggestions,
-            isGenerating: controller.state.isGeneratingSuggestions,
-            volatileThemText: controller.state.volatileThemText
-        )
-        overlayManager.toggle(content: content)
+        switch settings.sidebarMode {
+        case .classicSuggestions:
+            overlayManager.toggle(content: SuggestionPanelContent(engine: coordinator.suggestionEngine))
+        case .sidecast:
+            overlayManager.toggleSidecast(content: sidecastContent())
+        }
+    }
+
+    private func showSidebarContent() {
+        switch settings.sidebarMode {
+        case .classicSuggestions:
+            overlayManager.showSidePanel(content: SuggestionPanelContent(engine: coordinator.suggestionEngine))
+        case .sidecast:
+            overlayManager.showSidecastSidebar(content: sidecastContent())
+        }
+    }
+
+    private func sidecastContent() -> SidecastPanelContent {
+        SidecastPanelContent(settings: settings, engine: coordinator.sidecastEngine)
     }
 
     private func toggleNotepad() {
@@ -437,17 +487,11 @@ struct ContentView: View {
         case .toggle:
             if liveSessionController?.state.isRunning ?? false {
                 stopSession()
-            } else {
+            } else if liveSessionController?.state.downloadProgress == nil {
                 startSession()
             }
         case .confirmDownload:
-            guard settings.hasAcknowledgedRecordingConsent else {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    showConsentSheet = true
-                }
-                return
-            }
-            liveSessionController?.confirmDownloadAndStart(settings: settings)
+            liveSessionController?.downloadModelOnly(settings: settings)
         }
     }
 }

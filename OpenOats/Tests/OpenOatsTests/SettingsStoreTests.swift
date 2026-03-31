@@ -33,6 +33,12 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.llmProvider, .openRouter)
     }
 
+    func testOpenRouterApiKeyAutoTrimsWhitespace() {
+        let store = makeStore()
+        store.openRouterApiKey = "  sk-or-v1-abc123  \n"
+        XCTAssertEqual(store.openRouterApiKey, "sk-or-v1-abc123")
+    }
+
     func testLLMProviderRoundTrip() {
         let store = makeStore()
         store.llmProvider = .ollama
@@ -55,9 +61,58 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.embeddingProvider, .voyageAI)
     }
 
+    func testVoyageApiKeyAutoTrimsWhitespace() {
+        let store = makeStore()
+        store.voyageApiKey = "  pa-abc123  \t"
+        XCTAssertEqual(store.voyageApiKey, "pa-abc123")
+    }
+
     func testDefaultSuggestionVerbosity() {
         let store = makeStore()
         XCTAssertEqual(store.suggestionVerbosity, .quiet)
+    }
+
+    func testDefaultSidebarMode() {
+        let store = makeStore()
+        XCTAssertEqual(store.sidebarMode, .classicSuggestions)
+    }
+
+    func testSidebarModeRoundTrip() {
+        let store = makeStore()
+        store.sidebarMode = .sidecast
+        XCTAssertEqual(store.sidebarMode, .sidecast)
+    }
+
+    func testDefaultSidecastIntensity() {
+        let store = makeStore()
+        XCTAssertEqual(store.sidecastIntensity, .balanced)
+    }
+
+    func testDefaultSidecastPersonas() {
+        let store = makeStore()
+        XCTAssertEqual(store.sidecastPersonas.count, 4)
+        XCTAssertEqual(store.enabledSidecastPersonas.count, 4)
+        XCTAssertEqual(store.sidecastPersonas.first?.name, "The Checker")
+    }
+
+    func testSidecastPersonasRoundTrip() {
+        let store = makeStore()
+        store.sidecastPersonas = [
+            SidecastPersona(
+                name: "The Wire",
+                subtitle: "Fresh updates",
+                prompt: "Surface only truly new developments.",
+                avatarSymbol: "dot.radiowaves.left.and.right",
+                avatarTint: .blue,
+                verbosity: .short,
+                cadence: .normal,
+                evidencePolicy: .preferred
+            ),
+        ]
+
+        XCTAssertEqual(store.sidecastPersonas.count, 1)
+        XCTAssertEqual(store.sidecastPersonas.first?.name, "The Wire")
+        XCTAssertEqual(store.sidecastPersonas.first?.avatarSymbol, "dot.radiowaves.left.and.right")
     }
 
     func testSuggestionVerbosityRoundTrip() {
@@ -81,15 +136,30 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.mlxModel, "mlx-community/Llama-3.2-3B-Instruct-4bit")
     }
 
-    func testDefaultEnableTranscriptRefinement() {
+    func testDefaultEnableLiveTranscriptCleanup() {
         let store = makeStore()
-        XCTAssertFalse(store.enableTranscriptRefinement)
+        XCTAssertFalse(store.enableLiveTranscriptCleanup)
     }
 
-    func testEnableTranscriptRefinementRoundTrip() {
+    func testEnableLiveTranscriptCleanupRoundTrip() {
         let store = makeStore()
-        store.enableTranscriptRefinement = true
-        XCTAssertTrue(store.enableTranscriptRefinement)
+        store.enableLiveTranscriptCleanup = true
+        XCTAssertTrue(store.enableLiveTranscriptCleanup)
+    }
+
+    func testEnableLiveTranscriptCleanupDualWritesLegacyKey() {
+        let suiteName = "com.openoats.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let store = makeStore(defaults: defaults)
+        store.enableLiveTranscriptCleanup = true
+
+        XCTAssertEqual(defaults.bool(forKey: "enableLiveTranscriptCleanup"), true)
+        XCTAssertEqual(defaults.bool(forKey: "enableTranscriptRefinement"), true)
+
+        let reopened = makeStore(defaults: defaults)
+        XCTAssertTrue(reopened.enableLiveTranscriptCleanup)
     }
 
     // MARK: - Capture Settings Group
@@ -126,10 +196,25 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.enableEchoCancellation)
     }
 
-    func testDefaultEnableBatchRefinement() {
+    func testDefaultEnableBatchRetranscription() {
         let store = makeStore()
         // Defaults to false when key never set
-        XCTAssertFalse(store.enableBatchRefinement)
+        XCTAssertFalse(store.enableBatchRetranscription)
+    }
+
+    func testEnableBatchRetranscriptionDualWritesLegacyKey() {
+        let suiteName = "com.openoats.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let store = makeStore(defaults: defaults)
+        store.enableBatchRetranscription = true
+
+        XCTAssertEqual(defaults.bool(forKey: "enableBatchRetranscription"), true)
+        XCTAssertEqual(defaults.bool(forKey: "enableBatchRefinement"), true)
+
+        let reopened = makeStore(defaults: defaults)
+        XCTAssertTrue(reopened.enableBatchRetranscription)
     }
 
     func testDefaultBatchTranscriptionModel() {
@@ -296,5 +381,44 @@ final class SettingsStoreTests: XCTestCase {
 
     func testStorageTypealiasCompiles() {
         let _: AppSettingsStorage.Type = SettingsStorage.self
+    }
+
+    // MARK: - Cloud ASR API Keys
+
+    func testAssemblyAIApiKeyDefaultsToEmpty() {
+        let store = makeStore()
+        XCTAssertEqual(store.assemblyAIApiKey, "")
+    }
+
+    func testElevenLabsApiKeyDefaultsToEmpty() {
+        let store = makeStore()
+        XCTAssertEqual(store.elevenLabsApiKey, "")
+    }
+
+    func testAssemblyAIApiKeyAutoTrimsWhitespace() {
+        let store = makeStore()
+        store.assemblyAIApiKey = "  sk-test-abc123  \n"
+        XCTAssertEqual(store.assemblyAIApiKey, "sk-test-abc123")
+    }
+
+    func testElevenLabsApiKeyAutoTrimsWhitespace() {
+        let store = makeStore()
+        store.elevenLabsApiKey = "  xi-test-abc123  \n"
+        XCTAssertEqual(store.elevenLabsApiKey, "xi-test-abc123")
+    }
+
+    func testCloudASRApiKeyRoutesCorrectly() {
+        let store = makeStore()
+        store.assemblyAIApiKey = "aai-key"
+        store.elevenLabsApiKey = "el-key"
+
+        store.transcriptionModel = .assemblyAI
+        XCTAssertEqual(store.cloudASRApiKey, "aai-key")
+
+        store.transcriptionModel = .elevenLabsScribe
+        XCTAssertEqual(store.cloudASRApiKey, "el-key")
+
+        store.transcriptionModel = .parakeetV2
+        XCTAssertEqual(store.cloudASRApiKey, "")
     }
 }

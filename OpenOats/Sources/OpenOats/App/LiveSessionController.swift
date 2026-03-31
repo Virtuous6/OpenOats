@@ -15,7 +15,7 @@ struct LiveSessionState {
     var isGeneratingSuggestions: Bool = false
     var userNotes: [UserNote] = []
     var hasUserNotes: Bool = false
-    var batchStatus: BatchTranscriptionEngine.Status = .idle
+    var batchStatus: BatchAudioTranscriber.Status = .idle
     var batchIsImporting: Bool = false
     var lastEndedSession: SessionIndex? = nil
     var lastSessionHasNotes: Bool = false
@@ -23,6 +23,8 @@ struct LiveSessionState {
     var statusMessage: String? = nil
     var errorMessage: String? = nil
     var needsDownload: Bool = false
+    var downloadProgress: Double? = nil
+    var downloadDetail: DownloadProgressDetail? = nil
     var transcriptionPrompt: String = ""
     var modelDisplayName: String = ""
     var showLiveTranscript: Bool = true
@@ -39,6 +41,8 @@ final class LiveSessionController {
 
     private let coordinator: AppCoordinator
     private let container: AppContainer
+
+    private var downloadTask: Task<Void, Never>?
 
     // Tracked-change sentinels
     private var observedUtteranceCount = 0
@@ -79,7 +83,7 @@ final class LiveSessionController {
             try? await Task.sleep(for: .milliseconds(250))
 
             // Poll batch engine status (actor-isolated)
-            if let engine = coordinator.batchEngine {
+            if let engine = coordinator.batchAudioTranscriber {
                 let status = await engine.status
                 let importing = await engine.isImporting
                 if status != .idle || coordinator.batchStatus != .idle {
@@ -112,6 +116,7 @@ final class LiveSessionController {
 
     func startSession(settings: AppSettings) {
         coordinator.suggestionEngine?.clear()
+        coordinator.sidecastEngine?.clear()
         coordinator.handle(.userStarted(.manual()), settings: settings)
     }
 
@@ -122,6 +127,16 @@ final class LiveSessionController {
     func confirmDownloadAndStart(settings: AppSettings) {
         coordinator.transcriptionEngine?.downloadConfirmed = true
         startSession(settings: settings)
+    }
+
+    func downloadModelOnly(settings: AppSettings) {
+        guard downloadTask == nil else { return }
+        downloadTask = Task {
+            await coordinator.transcriptionEngine?.downloadModelOnly(
+                transcriptionModel: settings.transcriptionModel
+            )
+            downloadTask = nil
+        }
     }
 
     func toggleMicMute() {
@@ -160,7 +175,7 @@ final class LiveSessionController {
         switch request.command {
         case .startSession:
             guard coordinator.transcriptionEngine != nil,
-                  coordinator.suggestionEngine != nil else { return }
+                  (coordinator.suggestionEngine != nil || coordinator.sidecastEngine != nil) else { return }
             if !state.isRunning {
                 startSession(settings: settings)
             }
@@ -185,14 +200,22 @@ final class LiveSessionController {
     private func handleNewUtterance(_ last: Utterance, settings: AppSettings) {
         container.detectionController?.noteUtterance()
 
-        if settings.enableTranscriptRefinement, let engine = coordinator.refinementEngine {
+        if settings.enableLiveTranscriptCleanup, let engine = coordinator.liveTranscriptCleaner {
             Task {
-                await engine.refine(last)
+                await engine.clean(last)
             }
         }
 
         let sessionID = currentSessionID
-        coordinator.suggestionEngine?.onNewUtterance(last)
+
+        // Trigger the active realtime assistant from either speaker
+        switch settings.sidebarMode {
+        case .classicSuggestions:
+            coordinator.suggestionEngine?.onUtterance(last)
+        case .sidecast:
+            coordinator.sidecastEngine?.onUtterance(last)
+        }
+
 
         Task {
             await coordinator.sessionRepository.appendLiveUtterance(
@@ -227,8 +250,8 @@ final class LiveSessionController {
     // MARK: - Transcription Lifecycle (migrated from AppCoordinator)
 
     func startTranscription(metadata: MeetingMetadata, settings: AppSettings?) async {
-        if let batchEngine = coordinator.batchEngine {
-            await batchEngine.cancel()
+        if let batchAudioTranscriber = coordinator.batchAudioTranscriber {
+            await batchAudioTranscriber.cancel()
         }
 
         coordinator.lastEndedSession = nil
@@ -269,7 +292,7 @@ final class LiveSessionController {
         coordinator.liveNoteStore.start(sessionStartTime: .now)
 
         if let settings {
-            if settings.saveAudioRecording || settings.enableBatchRefinement {
+            if settings.saveAudioRecording || settings.enableBatchRetranscription {
                 coordinator.audioRecorder?.startSession()
                 coordinator.transcriptionEngine?.audioRecorder = coordinator.audioRecorder
             } else {
@@ -288,9 +311,9 @@ final class LiveSessionController {
         // 1. Drain audio buffers
         await coordinator.transcriptionEngine?.finalize()
 
-        // 1b. Drain pending refinements
-        if let settings, settings.enableTranscriptRefinement {
-            await coordinator.refinementEngine?.drain(timeout: .seconds(5))
+        // 1b. Drain pending cleanups
+        if let settings, settings.enableLiveTranscriptCleanup {
+            await coordinator.liveTranscriptCleaner?.drain(timeout: .seconds(5))
         }
 
         // 2. Drain delayed JSONL writes
@@ -323,7 +346,7 @@ final class LiveSessionController {
             return locale
         }()
 
-        // 4. Finalize: closes file handle, backfills refined text, writes session.json
+        // 4. Finalize: closes file handle, backfills cleaned text, writes session.json
         await coordinator.sessionRepository.finalizeSession(
             sessionID: sessionID,
             metadata: SessionFinalizeMetadata(
@@ -352,9 +375,18 @@ final class LiveSessionController {
             engine: engineName
         )
 
+        // 5b. Fire webhook if configured
+        if let settings {
+            WebhookService.fireIfEnabled(
+                settings: settings,
+                sessionIndex: index,
+                utterances: utterancesSnapshot
+            )
+        }
+
         // 6. Handle audio recording
         if let settings, let recorder = coordinator.audioRecorder {
-            let wantsBatch = settings.enableBatchRefinement
+            let wantsBatch = settings.enableBatchRetranscription
             let wantsExport = settings.saveAudioRecording
 
             if wantsBatch && wantsExport {
@@ -423,7 +455,7 @@ final class LiveSessionController {
         await coordinator.loadHistory()
 
         // 8. Kick off batch transcription if enabled
-        if let settings, settings.enableBatchRefinement, let batchEngine = coordinator.batchEngine {
+        if let settings, settings.enableBatchRetranscription, let batchAudioTranscriber = coordinator.batchAudioTranscriber {
             let batchSessionID = sessionID
             let batchModel = settings.batchTranscriptionModel
             let batchLocale = settings.locale
@@ -431,8 +463,8 @@ final class LiveSessionController {
             let repo = coordinator.sessionRepository
             let diarize = settings.enableDiarization
             let diarizeVariant = settings.diarizationVariant
-            Task.detached { [batchEngine] in
-                await batchEngine.process(
+            Task.detached { [batchAudioTranscriber] in
+                await batchAudioTranscriber.process(
                     sessionID: batchSessionID,
                     model: batchModel,
                     locale: batchLocale,
@@ -473,14 +505,24 @@ final class LiveSessionController {
         }
 
         var next = LiveSessionState()
+        let sidebarSuggestions: [Suggestion]
+        let sidebarGenerating: Bool
+        switch settings.sidebarMode {
+        case .classicSuggestions:
+            sidebarSuggestions = coordinator.suggestionEngine?.suggestions ?? []
+            sidebarGenerating = coordinator.suggestionEngine?.isGenerating ?? false
+        case .sidecast:
+            sidebarSuggestions = coordinator.sidecastEngine?.suggestions ?? []
+            sidebarGenerating = coordinator.sidecastEngine?.isGenerating ?? false
+        }
         next.isRunning = coordinator.transcriptionEngine?.isRunning ?? false
         next.sessionPhase = coordinator.state
         next.audioLevel = next.isRunning ? (coordinator.transcriptionEngine?.audioLevel ?? 0) : 0
         next.liveTranscript = coordinator.transcriptStore.utterances
         next.volatileYouText = coordinator.transcriptStore.volatileYouText
         next.volatileThemText = coordinator.transcriptStore.volatileThemText
-        next.suggestions = coordinator.suggestionEngine?.suggestions ?? []
-        next.isGeneratingSuggestions = coordinator.suggestionEngine?.isGenerating ?? false
+        next.suggestions = sidebarSuggestions
+        next.isGeneratingSuggestions = sidebarGenerating
         next.userNotes = coordinator.liveNoteStore.notes
         next.hasUserNotes = coordinator.liveNoteStore.hasNotes
         next.batchStatus = coordinator.batchStatus
@@ -491,6 +533,8 @@ final class LiveSessionController {
         next.statusMessage = coordinator.transcriptionEngine?.assetStatus
         next.errorMessage = coordinator.transcriptionEngine?.lastError
         next.needsDownload = coordinator.transcriptionEngine?.needsModelDownload ?? false
+        next.downloadProgress = coordinator.transcriptionEngine?.downloadProgress
+        next.downloadDetail = coordinator.transcriptionEngine?.downloadDetail
         next.transcriptionPrompt = settings.transcriptionModel.downloadPrompt
         next.modelDisplayName = activeModelRaw.split(separator: "/").last.map(String.init) ?? activeModelRaw
         next.showLiveTranscript = settings.showLiveTranscript

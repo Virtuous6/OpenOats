@@ -1,9 +1,6 @@
 import AppKit
 import Foundation
 import Observation
-import os
-
-private let logger = Logger(subsystem: "com.openoats.app", category: "MeetingDetection")
 
 /// One-shot events emitted by the detection controller for consumption by the coordinator.
 enum DetectionEvent: Sendable {
@@ -61,6 +58,9 @@ final class MeetingDetectionController {
 
     /// Task monitoring silence timeout during detected sessions.
     private var silenceCheckTask: Task<Void, Never>?
+
+    /// Task polling for meeting app process exit during recording.
+    private var appExitMonitorTask: Task<Void, Never>?
 
     /// Observer token for system sleep notifications.
     private var sleepObserver: Any?
@@ -136,6 +136,13 @@ final class MeetingDetectionController {
             }
         }
 
+        service.onIgnoreApp = { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                self.handleIgnoreApp()
+            }
+        }
+
         service.onTimeout = { [weak self] in
             guard let self else { return }
             Task { @MainActor in
@@ -163,7 +170,7 @@ final class MeetingDetectionController {
         installSleepObserver()
 
         if settings.detectionLogEnabled {
-            logger.info("Detection system started")
+            Log.meetingDetection.info("Detection system started")
         }
     }
 
@@ -175,6 +182,9 @@ final class MeetingDetectionController {
         silenceCheckTask?.cancel()
         silenceCheckTask = nil
         isMonitoringSilence = false
+
+        appExitMonitorTask?.cancel()
+        appExitMonitorTask = nil
 
         Task {
             await meetingDetector?.stop()
@@ -195,7 +205,7 @@ final class MeetingDetectionController {
         detectedApp = nil
         lastUtteranceAt = nil
 
-        logger.info("Detection system stopped")
+        Log.meetingDetection.info("Detection system stopped")
     }
 
     // MARK: - Sleep Observer
@@ -209,7 +219,7 @@ final class MeetingDetectionController {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.activeSettings?.detectionLogEnabled == true {
-                    logger.info("System sleep detected, yielding event")
+                    Log.meetingDetection.info("System sleep detected, yielding event")
                 }
                 self.eventContinuation.yield(.systemSleep)
             }
@@ -235,7 +245,7 @@ final class MeetingDetectionController {
                     let elapsed = Date().timeIntervalSince(lastUtterance)
                     if elapsed >= Double(timeoutMinutes) * 60.0 {
                         if self.activeSettings?.detectionLogEnabled == true {
-                            logger.info("Silence timeout (\(timeoutMinutes)m), stopping")
+                            Log.meetingDetection.info("Silence timeout (\(timeoutMinutes, privacy: .public)m), stopping")
                         }
                         self.eventContinuation.yield(.silenceTimeout)
                         break
@@ -256,6 +266,42 @@ final class MeetingDetectionController {
     /// Called when a new utterance arrives, resets the silence timer.
     func noteUtterance() {
         lastUtteranceAt = Date()
+    }
+
+    // MARK: - Meeting App Process Monitor
+
+    /// Start polling for meeting app process exit during recording.
+    /// When the meeting app that triggered detection is no longer running,
+    /// yield `.meetingAppExited` so the coordinator can auto-stop.
+    func startAppExitMonitoring(bundleID: String) {
+        appExitMonitorTask?.cancel()
+
+        appExitMonitorTask = Task { [weak self] in
+            // Poll every 5 seconds
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { break }
+                guard let self else { break }
+
+                let isRunning = NSWorkspace.shared.runningApplications.contains {
+                    $0.bundleIdentifier == bundleID
+                }
+
+                if !isRunning {
+                    if self.activeSettings?.detectionLogEnabled == true {
+                        Log.meetingDetection.info("Meeting app exited (\(bundleID, privacy: .public)), yielding event")
+                    }
+                    self.eventContinuation.yield(.meetingAppExited)
+                    break
+                }
+            }
+        }
+    }
+
+    /// Stop monitoring for meeting app process exit.
+    func stopAppExitMonitoring() {
+        appExitMonitorTask?.cancel()
+        appExitMonitorTask = nil
     }
 
     // MARK: - Evaluate Immediate
@@ -284,14 +330,20 @@ final class MeetingDetectionController {
             return
         }
 
+        // Don't prompt for permanently ignored apps
+        if let bundleID = app?.bundleID,
+           activeSettings?.ignoredAppBundleIDs.contains(bundleID) == true {
+            return
+        }
+
         if activeSettings?.detectionLogEnabled == true {
-            logger.info("Detected: \(app?.name ?? "unknown", privacy: .public)")
+            Log.meetingDetection.info("Detected: \(app?.name ?? "unknown", privacy: .public)")
         }
 
         let posted = await notificationService?.postMeetingDetected(appName: app?.name) ?? false
         if !posted {
             if activeSettings?.detectionLogEnabled == true {
-                logger.debug("Failed to post notification (permission denied?)")
+                Log.meetingDetection.debug("Failed to post notification (permission denied?)")
             }
         }
     }
@@ -330,7 +382,24 @@ final class MeetingDetectionController {
         }
 
         if activeSettings?.detectionLogEnabled == true {
-            logger.debug("User dismissed as not a meeting")
+            Log.meetingDetection.debug("User dismissed as not a meeting")
+        }
+    }
+
+    private func handleIgnoreApp() {
+        Task {
+            if let app = await meetingDetector?.detectedApp, let settings = activeSettings {
+                var ignored = settings.ignoredAppBundleIDs
+                if !ignored.contains(app.bundleID) {
+                    ignored.append(app.bundleID)
+                    settings.ignoredAppBundleIDs = ignored
+                }
+                dismissedEvents.insert(app.bundleID)
+            }
+        }
+
+        if activeSettings?.detectionLogEnabled == true {
+            Log.meetingDetection.debug("User chose to ignore this app permanently")
         }
     }
 
@@ -338,7 +407,7 @@ final class MeetingDetectionController {
         eventContinuation.yield(.dismissed)
 
         if activeSettings?.detectionLogEnabled == true {
-            logger.debug("User dismissed notification")
+            Log.meetingDetection.debug("User dismissed notification")
         }
     }
 
@@ -346,7 +415,7 @@ final class MeetingDetectionController {
         eventContinuation.yield(.timeout)
 
         if activeSettings?.detectionLogEnabled == true {
-            logger.debug("Notification timed out")
+            Log.meetingDetection.debug("Notification timed out")
         }
     }
 }

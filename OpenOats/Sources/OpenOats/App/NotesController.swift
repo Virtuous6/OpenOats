@@ -1,3 +1,5 @@
+import AppKit
+import AVFoundation
 import Foundation
 import Observation
 
@@ -7,7 +9,7 @@ struct NotesState {
     var sessionHistory: [SessionIndex] = []
     var selectedSessionID: String?
     var loadedTranscript: [SessionRecord] = []
-    var loadedNotes: EnhancedNotes?
+    var loadedNotes: GeneratedNotes?
     var notesGenerationStatus: GenerationStatus = .idle
     var cleanupStatus: CleanupStatus = .idle
     var retranscribeStatus: RetranscribeStatus = .idle
@@ -25,6 +27,10 @@ struct NotesState {
     var userNoteCount: Int = 0
     /// Loaded user notes for the "My Notes" tab.
     var loadedUserNotes: [UserNote] = []
+    /// URL of the playable audio file for the selected session (nil if no audio).
+    var audioFileURL: URL?
+    /// Whether audio is currently playing.
+    var isPlayingAudio: Bool = false
 }
 
 enum RetranscribeStatus: Equatable {
@@ -63,6 +69,10 @@ final class NotesController {
 
     /// Observation polling task for engine state mapping.
     @ObservationIgnored nonisolated(unsafe) private var engineObservationTask: Task<Void, Never>?
+
+    /// Audio player for session recordings.
+    @ObservationIgnored private var audioPlayer: AVPlayer?
+    @ObservationIgnored private var playerObservation: Any?
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -113,21 +123,24 @@ final class NotesController {
     func selectSession(_ sessionID: String?) {
         state.selectedSessionID = sessionID
         state.hasUserNotes = false
+        stopAudio()
 
         guard let sessionID else {
             state.loadedNotes = nil
             state.loadedTranscript = []
             state.selectedSessionDirectory = nil
+            state.audioFileURL = nil
             return
         }
 
         state.loadedNotes = nil
         state.loadedTranscript = []
+        state.audioFileURL = nil
         state.selectedSessionDirectory = coordinator.sessionRepository.sessionsDirectoryURL
             .appendingPathComponent(sessionID, isDirectory: true)
         state.showingOriginal = false
         state.retranscribeStatus = .idle
-        coordinator.cleanupEngine.cancel()
+        coordinator.batchTextCleaner.cancel()
         syncCleanupStatus()
         checkRetranscribeAvailability()
 
@@ -135,6 +148,7 @@ final class NotesController {
             let notes = await coordinator.sessionRepository.loadNotes(sessionID: sessionID)
             let transcript = await coordinator.sessionRepository.loadTranscript(sessionID: sessionID)
             let userNotesExist = await coordinator.sessionRepository.hasUserNotes(sessionID: sessionID)
+            let audioURL = await coordinator.sessionRepository.audioFileURL(for: sessionID)
 
             guard state.selectedSessionID == sessionID else { return }
 
@@ -146,6 +160,7 @@ final class NotesController {
             state.hasUserNotes = userNotesExist
             state.userNoteCount = loadedUserNotes.count
             state.loadedUserNotes = loadedUserNotes
+            state.audioFileURL = audioURL
 
             let session = state.sessionHistory.first { $0.id == sessionID }
             if let snapID = session?.templateSnapshot?.id {
@@ -154,6 +169,49 @@ final class NotesController {
                 state.selectedTemplate = coordinator.templateStore.template(for: TemplateStore.genericID)
             }
         }
+    }
+
+    // MARK: - Audio Playback
+
+    func toggleAudioPlayback() {
+        guard let url = state.audioFileURL else { return }
+
+        if state.isPlayingAudio {
+            audioPlayer?.pause()
+            state.isPlayingAudio = false
+            return
+        }
+
+        if audioPlayer?.currentItem?.asset != AVURLAsset(url: url) {
+            stopAudio()
+            let player = AVPlayer(url: url)
+            audioPlayer = player
+            playerObservation = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: player.currentItem,
+                queue: .main
+            ) { [weak self] _ in
+                self?.state.isPlayingAudio = false
+            }
+        }
+
+        audioPlayer?.play()
+        state.isPlayingAudio = true
+    }
+
+    func stopAudio() {
+        audioPlayer?.pause()
+        if let obs = playerObservation {
+            NotificationCenter.default.removeObserver(obs)
+            playerObservation = nil
+        }
+        audioPlayer = nil
+        state.isPlayingAudio = false
+    }
+
+    func revealAudioInFinder() {
+        guard let url = state.audioFileURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     // MARK: - Notes Generation
@@ -178,7 +236,7 @@ final class NotesController {
             )
 
             if !coordinator.notesEngine.generatedMarkdown.isEmpty {
-                let notes = EnhancedNotes(
+                let notes = GeneratedNotes(
                     template: coordinator.templateStore.snapshot(of: template),
                     generatedAt: Date(),
                     markdown: coordinator.notesEngine.generatedMarkdown
@@ -244,7 +302,7 @@ final class NotesController {
                     icon: "pencil.and.list.clipboard",
                     systemPrompt: ""
                 )
-                let notes = EnhancedNotes(
+                let notes = GeneratedNotes(
                     template: template,
                     generatedAt: Date(),
                     markdown: mergeEngine.generatedMarkdown
@@ -274,7 +332,7 @@ final class NotesController {
             let imageRef = "\n\n![](images/\(filename))\n"
 
             if let existing = state.loadedNotes {
-                let updated = EnhancedNotes(
+                let updated = GeneratedNotes(
                     template: existing.template,
                     generatedAt: existing.generatedAt,
                     markdown: existing.markdown + imageRef
@@ -285,7 +343,7 @@ final class NotesController {
                 let template = state.selectedTemplate
                     ?? coordinator.templateStore.template(for: TemplateStore.genericID)
                     ?? TemplateStore.builtInTemplates.first!
-                let notes = EnhancedNotes(
+                let notes = GeneratedNotes(
                     template: coordinator.templateStore.snapshot(of: template),
                     generatedAt: Date(),
                     markdown: "![](images/\(filename))"
@@ -303,7 +361,7 @@ final class NotesController {
         guard let sessionID = state.selectedSessionID, !state.loadedTranscript.isEmpty else { return }
 
         Task {
-            let updated = await coordinator.cleanupEngine.cleanup(
+            let updated = await coordinator.batchTextCleaner.cleanup(
                 records: state.loadedTranscript,
                 settings: settings
             )
@@ -313,10 +371,10 @@ final class NotesController {
                     text: record.text,
                     speaker: record.speaker,
                     timestamp: record.timestamp,
-                    refinedText: record.refinedText
+                    cleanedText: record.cleanedText
                 )
             }
-            await coordinator.sessionRepository.backfillRefinedText(sessionID: sessionID, from: utterances)
+            await coordinator.sessionRepository.backfillCleanedText(sessionID: sessionID, from: utterances)
 
             guard state.selectedSessionID == sessionID else { return }
             state.loadedTranscript = await coordinator.sessionRepository.loadTranscript(sessionID: sessionID)
@@ -325,7 +383,7 @@ final class NotesController {
     }
 
     func cancelCleanup() {
-        coordinator.cleanupEngine.cancel()
+        coordinator.batchTextCleaner.cancel()
         syncCleanupStatus()
     }
 
@@ -349,7 +407,7 @@ final class NotesController {
     /// Re-run batch transcription on existing audio files for the selected session.
     func retranscribe(settings: AppSettings) {
         guard let sessionID = state.selectedSessionID,
-              let batchEngine = coordinator.batchEngine else { return }
+              let batchEngine = coordinator.batchAudioTranscriber else { return }
 
         let model = settings.batchTranscriptionModel
         let locale = settings.locale
@@ -491,7 +549,7 @@ final class NotesController {
     }
 
     private func syncCleanupStatus() {
-        let engine = coordinator.cleanupEngine
+        let engine = coordinator.batchTextCleaner
         if engine.isCleaningUp {
             state.cleanupStatus = .inProgress(
                 completed: engine.chunksCompleted,
@@ -500,7 +558,7 @@ final class NotesController {
         } else if let error = engine.error {
             state.cleanupStatus = .error(error)
         } else if !state.loadedTranscript.isEmpty {
-            let hasAny = state.loadedTranscript.contains { $0.refinedText != nil }
+            let hasAny = state.loadedTranscript.contains { $0.cleanedText != nil }
             if hasAny {
                 state.cleanupStatus = .completed
             } else {
@@ -523,7 +581,7 @@ final class NotesController {
     private func syncRetranscribeStatus() {
         // Only sync progress while actively transcribing
         guard case .transcribing = state.retranscribeStatus else { return }
-        guard let batchEngine = coordinator.batchEngine else { return }
+        guard let batchEngine = coordinator.batchAudioTranscriber else { return }
 
         Task {
             let engineStatus = await batchEngine.status

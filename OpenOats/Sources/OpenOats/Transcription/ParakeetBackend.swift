@@ -6,12 +6,10 @@ import Foundation
 final class ParakeetBackend: TranscriptionBackend, @unchecked Sendable {
     let displayName: String
     private let version: AsrModelVersion
-    private let customVocabularyText: String
     private var asrManager: AsrManager?
 
     init(version: AsrModelVersion, customVocabulary: String = "") {
         self.version = version
-        self.customVocabularyText = customVocabulary
         self.displayName = version == .v2 ? "Parakeet TDT v2" : "Parakeet TDT v3"
     }
 
@@ -28,32 +26,14 @@ final class ParakeetBackend: TranscriptionBackend, @unchecked Sendable {
         try? FileManager.default.removeItem(at: cacheDir)
     }
 
-    func prepare(onStatus: @Sendable (String) -> Void) async throws {
+    func prepare(onStatus: @Sendable (String) -> Void, onProgress: @escaping @Sendable (Double) -> Void) async throws {
         onStatus("Downloading \(displayName)...")
-        let models = try await AsrModels.downloadAndLoad(version: version)
+        let models = try await AsrModels.downloadAndLoad(version: version) { progress in
+            onProgress(progress.fractionCompleted)
+        }
         onStatus("Initializing \(displayName)...")
         let asr = AsrManager(config: .default)
         try await asr.initialize(models: models)
-
-        // Configure custom vocabulary boosting if provided
-        let vocab = customVocabularyText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !vocab.isEmpty {
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("openoats-custom-vocabulary-\(UUID().uuidString).txt")
-            try vocab.write(to: tempURL, atomically: true, encoding: .utf8)
-            defer { try? FileManager.default.removeItem(at: tempURL) }
-
-            let (customVocabulary, ctcModels) = try await CustomVocabularyContext.loadWithCtcTokens(
-                from: tempURL.path
-            )
-            if !customVocabulary.terms.isEmpty {
-                try await asr.configureVocabularyBoosting(
-                    vocabulary: customVocabulary,
-                    ctcModels: ctcModels
-                )
-            }
-        }
-
         self.asrManager = asr
     }
 

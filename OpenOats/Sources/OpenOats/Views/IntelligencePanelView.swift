@@ -6,6 +6,7 @@ struct IntelligencePanelView: View {
     let intelligenceEngine: IntelligenceEngine
     let suggestions: [Suggestion]
     let isGeneratingSuggestions: Bool
+    var suggestionEngine: SuggestionEngine?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,9 +19,8 @@ struct IntelligencePanelView: View {
             case .off:
                 offContent
             case .passive:
-                SuggestionsView(
-                    suggestions: suggestions,
-                    isGenerating: isGeneratingSuggestions
+                SuggestionPanelContent(
+                    engine: suggestionEngine
                 )
             case .query:
                 queryContent

@@ -1,7 +1,4 @@
 import Foundation
-import os
-
-private let repoLog = Logger(subsystem: "com.openoats.app", category: "SessionRepository")
 
 // MARK: - Supporting Types
 
@@ -63,7 +60,7 @@ struct SessionDetail: Sendable {
     let index: SessionIndex
     let transcript: [SessionRecord]
     let liveTranscript: [SessionRecord]
-    let notes: EnhancedNotes?
+    let notes: GeneratedNotes?
     let notesMeta: NotesMeta?
 }
 
@@ -218,7 +215,7 @@ actor SessionRepository {
             speaker: utterance.speaker,
             text: utterance.text,
             timestamp: utterance.timestamp,
-            refinedText: utterance.refinedText
+            cleanedText: utterance.cleanedText
         )
 
         if metadata.isDelayed {
@@ -264,27 +261,34 @@ actor SessionRepository {
 
             guard let self else { return }
 
-            let decision = await suggestionEngine?.lastDecision
-            let latestSuggestion = await suggestionEngine?.suggestions.first
+            let snapshot: SuggestionEngine.LogSnapshot?
+            if let utteranceID {
+                snapshot = await suggestionEngine?.logSnapshot(forTriggerUtteranceID: utteranceID)
+            } else {
+                snapshot = nil
+            }
             let summary = await transcriptStore?.conversationState.shortSummary
 
-            let refinedText: String?
+            let cleanedText: String?
             if let utteranceID, let store = transcriptStore {
-                refinedText = await store.utterances.first(where: { $0.id == utteranceID })?.refinedText
+                cleanedText = await store.utterances.first(where: { $0.id == utteranceID })?.cleanedText
             } else {
-                refinedText = baseRecord.refinedText
+                cleanedText = baseRecord.cleanedText
             }
 
             let enrichedRecord = SessionRecord(
                 speaker: baseRecord.speaker,
                 text: baseRecord.text,
                 timestamp: baseRecord.timestamp,
-                suggestions: latestSuggestion.map { [$0.text] },
-                kbHits: latestSuggestion?.kbHits.map { $0.sourceFile },
-                suggestionDecision: decision,
-                surfacedSuggestionText: decision?.shouldSurface == true ? latestSuggestion?.text : nil,
+                suggestions: snapshot.map { [$0.surfacedText] },
+                kbHits: snapshot?.kbHitPaths,
+                suggestionDecision: nil,
+                surfacedSuggestionText: snapshot?.surfacedText,
                 conversationStateSummary: summary?.isEmpty == false ? summary : nil,
-                refinedText: refinedText
+                cleanedText: cleanedText,
+                suggestionID: snapshot?.suggestionID,
+                triggerUtteranceID: snapshot?.triggerUtteranceID,
+                suggestionLifecycle: snapshot?.lifecycle
             )
 
             await self.appendRecord(enrichedRecord)
@@ -319,8 +323,8 @@ actor SessionRepository {
         liveFileHandle = nil
         currentSessionID = nil
 
-        // Backfill refined text into live transcript
-        backfillRefinedText(sessionID: sessionID, from: metadata.utterances)
+        // Backfill cleaned text into live transcript
+        backfillCleanedText(sessionID: sessionID, from: metadata.utterances)
 
         // Write session.json with final metadata
         let sessionMeta = SessionMetadata(
@@ -430,7 +434,7 @@ actor SessionRepository {
             }
             try fm.moveItem(at: tempURL, to: finalURL)
         } catch {
-            repoLog.error("Failed to write final transcript: \(error.localizedDescription, privacy: .public)")
+            Log.sessionRepository.error("Failed to write final transcript: \(error, privacy: .public)")
         }
 
         // Mirror to notesFolderPath
@@ -439,7 +443,7 @@ actor SessionRepository {
 
     // MARK: - Notes
 
-    func saveNotes(sessionID: String, notes: EnhancedNotes) {
+    func saveNotes(sessionID: String, notes: GeneratedNotes) {
         let dir = sessionDirectory(for: sessionID)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
@@ -467,7 +471,7 @@ actor SessionRepository {
         mirrorNotesArtifacts(sessionID: sessionID)
     }
 
-    func loadNotes(sessionID: String) -> EnhancedNotes? {
+    func loadNotes(sessionID: String) -> GeneratedNotes? {
         let dir = sessionDirectory(for: sessionID)
         let mdURL = dir.appendingPathComponent("notes.md")
         let metaURL = dir.appendingPathComponent("notes.meta.json")
@@ -479,7 +483,7 @@ actor SessionRepository {
             return LegacySessionReader.loadNotes(sessionID: sessionID, sessionsDirectory: sessionsDirectory)
         }
 
-        return EnhancedNotes(
+        return GeneratedNotes(
             template: meta.templateSnapshot,
             generatedAt: meta.generatedAt,
             markdown: markdown
@@ -507,7 +511,7 @@ actor SessionRepository {
             handle.write(Data("\n".utf8))
             try handle.close()
         } catch {
-            repoLog.error("Failed to write user note: \(error.localizedDescription, privacy: .public)")
+            Log.sessionRepository.error("Failed to write user note: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -721,6 +725,15 @@ actor SessionRepository {
         writeSessionMetadata(meta, sessionID: sessionID)
     }
 
+    /// Update source and tags for an imported session.
+    func updateSessionSource(sessionID: String, source: String, tags: [String]) {
+        guard var meta = loadSessionMetadataFile(sessionID: sessionID) else { return }
+        meta.source = source
+        let existing = meta.tags ?? []
+        meta.tags = Self.normalizeTags(existing + tags)
+        writeSessionMetadata(meta, sessionID: sessionID)
+    }
+
     /// Collect all unique tags across all sessions for autocomplete.
     func allTags() -> [String] {
         let sessions = listSessions()
@@ -820,7 +833,7 @@ actor SessionRepository {
         timeFmt.dateFormat = "HH:mm:ss"
 
         for record in records {
-            let displayText = record.refinedText ?? record.text
+            let displayText = record.cleanedText ?? record.text
             result += "[\(timeFmt.string(from: record.timestamp))] \(record.speaker.displayLabel): \(displayText)\n"
         }
 
@@ -916,31 +929,31 @@ actor SessionRepository {
 
 
 
-    // MARK: - Refined Text Backfill
+    // MARK: - Cleaned Text Backfill
 
-    func backfillRefinedText(from utterances: [Utterance]) {
+    func backfillCleanedText(from utterances: [Utterance]) {
         guard let sessionID = currentSessionID else { return }
 
         try? liveFileHandle?.close()
         liveFileHandle = nil
 
         let liveURL = sessionDirectory(for: sessionID).appendingPathComponent("transcript.live.jsonl")
-        rewriteJSONLWithRefinedText(file: liveURL, utterances: utterances)
+        rewriteJSONLWithCleanedText(file: liveURL, utterances: utterances)
 
         liveFileHandle = try? FileHandle(forWritingTo: liveURL)
     }
 
-    func backfillRefinedText(sessionID: String, from utterances: [Utterance]) {
+    func backfillCleanedText(sessionID: String, from utterances: [Utterance]) {
         let liveURL = sessionDirectory(for: sessionID).appendingPathComponent("transcript.live.jsonl")
         if FileManager.default.fileExists(atPath: liveURL.path) {
-            rewriteJSONLWithRefinedText(file: liveURL, utterances: utterances)
+            rewriteJSONLWithCleanedText(file: liveURL, utterances: utterances)
             return
         }
 
         // Legacy fallback
         let legacyURL = sessionsDirectory.appendingPathComponent("\(sessionID).jsonl")
         if FileManager.default.fileExists(atPath: legacyURL.path) {
-            rewriteJSONLWithRefinedText(file: legacyURL, utterances: utterances)
+            rewriteJSONLWithCleanedText(file: legacyURL, utterances: utterances)
         }
     }
 
@@ -953,7 +966,7 @@ actor SessionRepository {
         endedAt: Date? = nil,
         templateSnapshot: TemplateSnapshot? = nil,
         title: String? = nil,
-        notes: EnhancedNotes? = nil
+        notes: GeneratedNotes? = nil
     ) {
         let dir = sessionDirectory(for: id)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -996,6 +1009,25 @@ actor SessionRepository {
 
     func getCurrentSessionID() -> String? { currentSessionID }
 
+    /// Returns the URL of the playable audio file for a session, if one exists.
+    /// Checks for merged M4A exports and imported audio files.
+    func audioFileURL(for sessionID: String) -> URL? {
+        let audioDir = sessionDirectory(for: sessionID)
+            .appendingPathComponent("audio", isDirectory: true)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: audioDir.path) else { return nil }
+
+        guard let contents = try? fm.contentsOfDirectory(
+            at: audioDir,
+            includingPropertiesForKeys: nil
+        ) else { return nil }
+
+        // Prefer M4A exports, then imported files — skip raw CAF and batch metadata
+        let skipExtensions: Set<String> = ["caf", "json"]
+        let playable = contents.filter { !skipExtensions.contains($0.pathExtension.lowercased()) }
+        return playable.first
+    }
+
     // MARK: - Private Helpers
 
     private func sessionDirectory(for sessionID: String) -> URL {
@@ -1015,7 +1047,7 @@ actor SessionRepository {
             try data.write(to: url, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
-            repoLog.error("Failed to write session.json: \(error.localizedDescription, privacy: .public)")
+            Log.sessionRepository.error("Failed to write session.json: \(error, privacy: .public)")
         }
     }
 
@@ -1036,14 +1068,14 @@ actor SessionRepository {
     }
 
     private func reportWriteError(_ message: String) {
-        repoLog.error("\(message, privacy: .public)")
+        Log.sessionRepository.error("\(message, privacy: .public)")
         guard !hasReportedWriteError else { return }
         hasReportedWriteError = true
         onWriteError?(message)
     }
 
     @discardableResult
-    private func rewriteJSONLWithRefinedText(file: URL, utterances: [Utterance]) -> Bool {
+    private func rewriteJSONLWithCleanedText(file: URL, utterances: [Utterance]) -> Bool {
         guard let content = try? String(contentsOf: file, encoding: .utf8) else { return false }
 
         let backupURL = file.appendingPathExtension("pre-cleanup.bak")
@@ -1054,14 +1086,14 @@ actor SessionRepository {
 
         let iso8601Formatter = ISO8601DateFormatter()
         iso8601Formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var refinedLookup: [String: String] = [:]
+        var cleanedLookup: [String: String] = [:]
         for utterance in utterances {
-            guard let refined = utterance.refinedText else { continue }
+            guard let cleaned = utterance.cleanedText else { continue }
             let key = "\(iso8601Formatter.string(from: utterance.timestamp))|\(utterance.speaker.storageKey)"
-            refinedLookup[key] = refined
+            cleanedLookup[key] = cleaned
         }
 
-        guard !refinedLookup.isEmpty else { return false }
+        guard !cleanedLookup.isEmpty else { return false }
 
         var updatedLines: [String] = []
         var anyUpdated = false
@@ -1073,10 +1105,10 @@ actor SessionRepository {
                 continue
             }
 
-            if record.refinedText == nil {
+            if record.cleanedText == nil {
                 let key = "\(iso8601Formatter.string(from: record.timestamp))|\(record.speaker.storageKey)"
-                if let refined = refinedLookup[key] {
-                    record = record.withRefinedText(refined)
+                if let cleaned = cleanedLookup[key] {
+                    record = record.withCleanedText(cleaned)
                     anyUpdated = true
                 }
             }
@@ -1176,7 +1208,7 @@ actor SessionRepository {
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
             mirroredFileURLs[sessionID] = fileURL
         } catch {
-            repoLog.error("Mirror write failed: \(error.localizedDescription, privacy: .public)")
+            Log.sessionRepository.error("Mirror write failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -1228,7 +1260,7 @@ actor SessionRepository {
                 try? fm.removeItem(at: micLegacy)
                 try? fm.removeItem(at: sysLegacy)
                 try? fm.removeItem(at: item.appendingPathComponent("batch-meta.json"))
-                repoLog.info("Cleaned up orphaned batch audio in \(name, privacy: .public)")
+                Log.sessionRepository.info("Cleaned up orphaned batch audio in \(name, privacy: .public)")
             }
         }
     }

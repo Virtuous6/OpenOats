@@ -76,14 +76,14 @@ final class AppContainer {
             let suiteName = "com.openoats.uitests.\(runID)"
             let defaults = UserDefaults(suiteName: suiteName) ?? .standard
             defaults.removePersistentDomain(forName: suiteName)
-            defaults.set(true, forKey: "hasCompletedOnboarding")
+            defaults.set(scenario != .wizardSmoke, forKey: "hasCompletedOnboarding")
             defaults.set(true, forKey: "hasAcknowledgedRecordingConsent")
             defaults.set(false, forKey: "meetingAutoDetectEnabled")
             defaults.set(false, forKey: "hasShownAutoDetectExplanation")
             defaults.set(false, forKey: "hideFromScreenShare")
             defaults.set(true, forKey: "showLiveTranscript")
             defaults.set(false, forKey: "saveAudioRecording")
-            defaults.set(false, forKey: "enableTranscriptRefinement")
+            defaults.set(false, forKey: "enableLiveTranscriptCleanup")
             defaults.set(notesDirectory.path, forKey: "notesFolderPath")
             defaults.set("", forKey: "kbFolderPath")
 
@@ -127,6 +127,11 @@ final class AppContainer {
             knowledgeBase: knowledgeBase,
             settings: settings
         )
+        let sidecastEngine = SidecastEngine(
+            transcriptStore: coordinator.transcriptStore,
+            knowledgeBase: knowledgeBase,
+            settings: settings
+        )
 
         let transcriptionEngine: TranscriptionEngine
         switch mode {
@@ -154,13 +159,14 @@ final class AppContainer {
             knowledgeBase: knowledgeBase,
             suggestionEngine: suggestionEngine,
             intelligenceEngine: intelligenceEngine,
+            sidecastEngine: sidecastEngine,
             transcriptionEngine: transcriptionEngine,
-            refinementEngine: TranscriptRefinementEngine(
+            liveTranscriptCleaner: LiveTranscriptCleaner(
                 settings: settings,
                 transcriptStore: coordinator.transcriptStore
             ),
             audioRecorder: AudioRecorder(outputDirectory: notesDirectory),
-            batchEngine: BatchTranscriptionEngine()
+            batchAudioTranscriber: BatchAudioTranscriber()
         )
     }
 
@@ -170,13 +176,14 @@ final class AppContainer {
 
         let services = makeServices(settings: settings, coordinator: coordinator)
         coordinator.transcriptionEngine = services.transcriptionEngine
-        coordinator.refinementEngine = services.refinementEngine
+        coordinator.liveTranscriptCleaner = services.liveTranscriptCleaner
         coordinator.audioRecorder = services.audioRecorder
-        coordinator.batchEngine = services.batchEngine
+        coordinator.batchAudioTranscriber = services.batchAudioTranscriber
         coordinator.setViewServices(
             knowledgeBase: services.knowledgeBase,
             suggestionEngine: services.suggestionEngine,
-            intelligenceEngine: services.intelligenceEngine
+            intelligenceEngine: services.intelligenceEngine,
+            sidecastEngine: services.sidecastEngine
         )
     }
 

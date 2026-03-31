@@ -52,6 +52,18 @@ struct MenuBarPopoverView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
+            Button(action: {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }) {
+                HStack {
+                    Text("Settings…")
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
             Divider()
 
             Button(action: onQuit) {
@@ -96,7 +108,7 @@ struct MenuBarPopoverView: View {
                 Circle()
                     .fill(.secondary)
                     .frame(width: 8, height: 8)
-                Text("Listening for meetings...")
+                Text("Meeting detection on")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             } else {

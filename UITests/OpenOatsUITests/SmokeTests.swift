@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 
+@MainActor
 final class SmokeTests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -18,8 +19,23 @@ final class SmokeTests: XCTestCase {
         app.activate()
         app.typeKey(",", modifierFlags: .command)
 
+        // Settings window opens on General tab — verify the tab view exists
+        let tabView = element(in: app, identifier: "settings.tabView")
+        XCTAssertTrue(tabView.waitForExistence(timeout: 5))
+
+        // Navigate to Intelligence tab and verify LLM picker
+        app.toolbars.buttons["Intelligence"].click()
         XCTAssertTrue(element(in: app, identifier: "settings.llmProviderPicker").waitForExistence(timeout: 5))
+
+        // Navigate to Transcription tab and verify model picker
+        app.toolbars.buttons["Transcription"].click()
         XCTAssertTrue(element(in: app, identifier: "settings.transcriptionModelPicker").waitForExistence(timeout: 5))
+    }
+
+    func testFirstLaunchShowsSetupWizard() {
+        let app = launchApp(scenario: "wizardSmoke")
+
+        XCTAssertTrue(element(in: app, identifier: "wizard.root").waitForExistence(timeout: 5))
     }
 
     func testSessionSmokeShowsEndedBanner() {
@@ -37,11 +53,11 @@ final class SmokeTests: XCTestCase {
         XCTAssertTrue(element(in: app, identifier: "app.sessionEndedBanner").waitForExistence(timeout: 5))
     }
 
-    func testNotesSmokeSupportsDeepLinkAndGeneration() {
+    func testNotesSmokeSupportsDeepLinkAndGeneration() async {
         let app = launchApp(scenario: "notesSmoke")
 
         let deepLink = URL(string: "openoats://notes?sessionID=session_ui_test_notes")!
-        openDeepLink(deepLink)
+        await openDeepLink(deepLink)
 
         XCTAssertTrue(element(in: app, identifier: "notes.generateButton").waitForExistence(timeout: 5))
         element(in: app, identifier: "notes.generateButton").click()
@@ -61,7 +77,7 @@ final class SmokeTests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
-    private func openDeepLink(_ url: URL) {
+    private func openDeepLink(_ url: URL) async {
         let hostAppURL = Bundle(for: Self.self)
             .bundleURL
             .deletingLastPathComponent()
@@ -75,15 +91,11 @@ final class SmokeTests: XCTestCase {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
 
-        let opened = expectation(description: "open deep link in host app")
-        var openError: Error?
-
-        NSWorkspace.shared.open([url], withApplicationAt: hostAppURL, configuration: configuration) { _, error in
-            openError = error
-            opened.fulfill()
+        let openError = await withCheckedContinuation { continuation in
+            NSWorkspace.shared.open([url], withApplicationAt: hostAppURL, configuration: configuration) { _, error in
+                continuation.resume(returning: error)
+            }
         }
-
-        wait(for: [opened], timeout: 5)
         XCTAssertNil(openError)
     }
 

@@ -4,6 +4,8 @@ import Foundation
 enum BackendStatus: Equatable, Sendable {
     case ready
     case needsDownload(prompt: String)
+    case downloading(progress: Double)
+    case error(reason: String)
 }
 
 /// Unified interface for all transcription backends (local and cloud).
@@ -20,7 +22,10 @@ protocol TranscriptionBackend: Sendable {
 
     /// Prepare the backend for use (download models, validate API keys, etc.).
     /// Must be called exactly once, and must complete before any call to transcribe().
-    func prepare(onStatus: @Sendable (String) -> Void) async throws
+    /// - Parameters:
+    ///   - onStatus: Reports human-readable status messages (e.g. "Downloading…").
+    ///   - onProgress: Reports download progress as a fraction in 0…1 (called only during download).
+    func prepare(onStatus: @Sendable (String) -> Void, onProgress: @escaping @Sendable (Double) -> Void) async throws
 
     /// Transcribe a segment of Float32 audio samples at 16kHz mono.
     /// Returns the transcribed text, or empty string if no speech detected.
@@ -37,6 +42,11 @@ protocol TranscriptionBackend: Sendable {
 
 extension TranscriptionBackend {
     func clearModelCache() {}
+
+    /// Convenience overload without progress reporting.
+    func prepare(onStatus: @Sendable (String) -> Void) async throws {
+        try await prepare(onStatus: onStatus, onProgress: { _ in })
+    }
 }
 
 enum TranscriptionBackendError: Error {

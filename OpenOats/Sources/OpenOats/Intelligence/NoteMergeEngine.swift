@@ -128,7 +128,7 @@ final class NoteMergeEngine {
             let minutes = Int(elapsed) / 60
             let seconds = Int(elapsed) % 60
             let speaker = record.speaker.displayLabel
-            let text = record.refinedText ?? record.text
+            let text = record.cleanedText ?? record.text
             transcriptText += "[\(String(format: "%02d:%02d", minutes, seconds))] \(speaker): \(text)\n"
         }
 

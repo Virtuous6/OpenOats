@@ -4,6 +4,7 @@ enum UITestScenario: String {
     case launchSmoke
     case sessionSmoke
     case notesSmoke
+    case wizardSmoke
 }
 
 enum AppRuntimeMode {
@@ -15,10 +16,11 @@ struct AppServices {
     let knowledgeBase: KnowledgeBase
     let suggestionEngine: SuggestionEngine
     let intelligenceEngine: IntelligenceEngine
+    let sidecastEngine: SidecastEngine
     let transcriptionEngine: TranscriptionEngine
-    let refinementEngine: TranscriptRefinementEngine
+    let liveTranscriptCleaner: LiveTranscriptCleaner
     let audioRecorder: AudioRecorder
-    let batchEngine: BatchTranscriptionEngine
+    let batchAudioTranscriber: BatchAudioTranscriber
 }
 
 struct AppLaunchContext {

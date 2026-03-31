@@ -195,7 +195,7 @@ final class IntelligenceEngineTests: XCTestCase {
         intelEngine.mode = .off
 
         let utterance = makeUtterance(text: "What should we do about the customer retention problem? I think we need to address this urgently.")
-        suggestionEngine.onNewUtterance(utterance)
+        suggestionEngine.onUtterance(utterance)
 
         // Should not generate anything — mode is off
         XCTAssertTrue(suggestionEngine.suggestions.isEmpty)
@@ -213,7 +213,7 @@ final class IntelligenceEngineTests: XCTestCase {
         intelEngine.mode = .query
 
         let utterance = makeUtterance(text: "What should we do about the customer retention problem?")
-        suggestionEngine.onNewUtterance(utterance)
+        suggestionEngine.onUtterance(utterance)
 
         XCTAssertTrue(suggestionEngine.suggestions.isEmpty)
         XCTAssertFalse(suggestionEngine.isGenerating)

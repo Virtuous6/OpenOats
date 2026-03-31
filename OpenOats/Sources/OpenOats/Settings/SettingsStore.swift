@@ -9,6 +9,8 @@ import Security
 final class SettingsStore {
     private let defaults: UserDefaults
     private let secretStore: AppSecretStore
+    private static let enableLiveTranscriptCleanupLegacyKey = "enableTranscriptRefinement"
+    private static let enableBatchRetranscriptionLegacyKey = "enableBatchRefinement"
 
     // MARK: - AI Settings
 
@@ -28,8 +30,33 @@ final class SettingsStore {
         get { access(keyPath: \.openRouterApiKey); return _openRouterApiKey }
         set {
             withMutation(keyPath: \.openRouterApiKey) {
-                _openRouterApiKey = newValue
-                secretStore.save(key: "openRouterApiKey", value: newValue)
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                _openRouterApiKey = trimmed
+                secretStore.save(key: "openRouterApiKey", value: trimmed)
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _assemblyAIApiKey: String
+    var assemblyAIApiKey: String {
+        get { access(keyPath: \.assemblyAIApiKey); return _assemblyAIApiKey }
+        set {
+            withMutation(keyPath: \.assemblyAIApiKey) {
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                _assemblyAIApiKey = trimmed
+                secretStore.save(key: "assemblyAIApiKey", value: trimmed)
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _elevenLabsApiKey: String
+    var elevenLabsApiKey: String {
+        get { access(keyPath: \.elevenLabsApiKey); return _elevenLabsApiKey }
+        set {
+            withMutation(keyPath: \.elevenLabsApiKey) {
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                _elevenLabsApiKey = trimmed
+                secretStore.save(key: "elevenLabsApiKey", value: trimmed)
             }
         }
     }
@@ -105,8 +132,9 @@ final class SettingsStore {
         get { access(keyPath: \.openAILLMApiKey); return _openAILLMApiKey }
         set {
             withMutation(keyPath: \.openAILLMApiKey) {
-                _openAILLMApiKey = newValue
-                secretStore.save(key: "openAILLMApiKey", value: newValue)
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                _openAILLMApiKey = trimmed
+                secretStore.save(key: "openAILLMApiKey", value: trimmed)
             }
         }
     }
@@ -138,8 +166,9 @@ final class SettingsStore {
         get { access(keyPath: \.openAIEmbedApiKey); return _openAIEmbedApiKey }
         set {
             withMutation(keyPath: \.openAIEmbedApiKey) {
-                _openAIEmbedApiKey = newValue
-                secretStore.save(key: "openAIEmbedApiKey", value: newValue)
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                _openAIEmbedApiKey = trimmed
+                secretStore.save(key: "openAIEmbedApiKey", value: trimmed)
             }
         }
     }
@@ -182,8 +211,9 @@ final class SettingsStore {
         get { access(keyPath: \.voyageApiKey); return _voyageApiKey }
         set {
             withMutation(keyPath: \.voyageApiKey) {
-                _voyageApiKey = newValue
-                secretStore.save(key: "voyageApiKey", value: newValue)
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                _voyageApiKey = trimmed
+                secretStore.save(key: "voyageApiKey", value: trimmed)
             }
         }
     }
@@ -199,13 +229,102 @@ final class SettingsStore {
         }
     }
 
-    @ObservationIgnored nonisolated(unsafe) private var _enableTranscriptRefinement: Bool
-    var enableTranscriptRefinement: Bool {
-        get { access(keyPath: \.enableTranscriptRefinement); return _enableTranscriptRefinement }
+    @ObservationIgnored nonisolated(unsafe) private var _enableLiveTranscriptCleanup: Bool
+    var enableLiveTranscriptCleanup: Bool {
+        get { access(keyPath: \.enableLiveTranscriptCleanup); return _enableLiveTranscriptCleanup }
         set {
-            withMutation(keyPath: \.enableTranscriptRefinement) {
-                _enableTranscriptRefinement = newValue
-                defaults.set(newValue, forKey: "enableTranscriptRefinement")
+            withMutation(keyPath: \.enableLiveTranscriptCleanup) {
+                _enableLiveTranscriptCleanup = newValue
+                defaults.set(newValue, forKey: "enableLiveTranscriptCleanup")
+                defaults.set(newValue, forKey: Self.enableLiveTranscriptCleanupLegacyKey)
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _realtimeModel: String
+    var realtimeModel: String {
+        get { access(keyPath: \.realtimeModel); return _realtimeModel }
+        set {
+            withMutation(keyPath: \.realtimeModel) {
+                _realtimeModel = newValue
+                defaults.set(newValue, forKey: "realtimeModel")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _realtimeOllamaModel: String
+    var realtimeOllamaModel: String {
+        get { access(keyPath: \.realtimeOllamaModel); return _realtimeOllamaModel }
+        set {
+            withMutation(keyPath: \.realtimeOllamaModel) {
+                _realtimeOllamaModel = newValue
+                defaults.set(newValue, forKey: "realtimeOllamaModel")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _suggestionPanelEnabled: Bool
+    var suggestionPanelEnabled: Bool {
+        get { access(keyPath: \.suggestionPanelEnabled); return _suggestionPanelEnabled }
+        set {
+            withMutation(keyPath: \.suggestionPanelEnabled) {
+                _suggestionPanelEnabled = newValue
+                defaults.set(newValue, forKey: "suggestionPanelEnabled")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _sidebarMode: SidebarMode
+    var sidebarMode: SidebarMode {
+        get { access(keyPath: \.sidebarMode); return _sidebarMode }
+        set {
+            withMutation(keyPath: \.sidebarMode) {
+                _sidebarMode = newValue
+                defaults.set(newValue.rawValue, forKey: "sidebarMode")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _sidecastIntensity: SidecastIntensity
+    var sidecastIntensity: SidecastIntensity {
+        get { access(keyPath: \.sidecastIntensity); return _sidecastIntensity }
+        set {
+            withMutation(keyPath: \.sidecastIntensity) {
+                _sidecastIntensity = newValue
+                defaults.set(newValue.rawValue, forKey: "sidecastIntensity")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _sidecastPersonas: [SidecastPersona]
+    var sidecastPersonas: [SidecastPersona] {
+        get { access(keyPath: \.sidecastPersonas); return _sidecastPersonas }
+        set {
+            withMutation(keyPath: \.sidecastPersonas) {
+                _sidecastPersonas = newValue
+                defaults.set(Self.encodePersonas(newValue), forKey: "sidecastPersonas")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _preFetchIntervalSeconds: Double
+    var preFetchIntervalSeconds: Double {
+        get { access(keyPath: \.preFetchIntervalSeconds); return _preFetchIntervalSeconds }
+        set {
+            withMutation(keyPath: \.preFetchIntervalSeconds) {
+                _preFetchIntervalSeconds = newValue
+                defaults.set(newValue, forKey: "preFetchIntervalSeconds")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _kbSimilarityThreshold: Double
+    var kbSimilarityThreshold: Double {
+        get { access(keyPath: \.kbSimilarityThreshold); return _kbSimilarityThreshold }
+        set {
+            withMutation(keyPath: \.kbSimilarityThreshold) {
+                _kbSimilarityThreshold = newValue
+                defaults.set(newValue, forKey: "kbSimilarityThreshold")
             }
         }
     }
@@ -219,6 +338,17 @@ final class SettingsStore {
             withMutation(keyPath: \.inputDeviceID) {
                 _inputDeviceID = newValue
                 defaults.set(Int(newValue), forKey: "inputDeviceID")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _outputDeviceID: AudioDeviceID
+    var outputDeviceID: AudioDeviceID {
+        get { access(keyPath: \.outputDeviceID); return _outputDeviceID }
+        set {
+            withMutation(keyPath: \.outputDeviceID) {
+                _outputDeviceID = newValue
+                defaults.set(Int(newValue), forKey: "outputDeviceID")
             }
         }
     }
@@ -278,13 +408,14 @@ final class SettingsStore {
         }
     }
 
-    @ObservationIgnored nonisolated(unsafe) private var _enableBatchRefinement: Bool
-    var enableBatchRefinement: Bool {
-        get { access(keyPath: \.enableBatchRefinement); return _enableBatchRefinement }
+    @ObservationIgnored nonisolated(unsafe) private var _enableBatchRetranscription: Bool
+    var enableBatchRetranscription: Bool {
+        get { access(keyPath: \.enableBatchRetranscription); return _enableBatchRetranscription }
         set {
-            withMutation(keyPath: \.enableBatchRefinement) {
-                _enableBatchRefinement = newValue
-                defaults.set(newValue, forKey: "enableBatchRefinement")
+            withMutation(keyPath: \.enableBatchRetranscription) {
+                _enableBatchRetranscription = newValue
+                defaults.set(newValue, forKey: "enableBatchRetranscription")
+                defaults.set(newValue, forKey: Self.enableBatchRetranscriptionLegacyKey)
             }
         }
     }
@@ -346,6 +477,17 @@ final class SettingsStore {
         }
     }
 
+    @ObservationIgnored nonisolated(unsafe) private var _ignoredAppBundleIDs: [String]
+    var ignoredAppBundleIDs: [String] {
+        get { access(keyPath: \.ignoredAppBundleIDs); return _ignoredAppBundleIDs }
+        set {
+            withMutation(keyPath: \.ignoredAppBundleIDs) {
+                _ignoredAppBundleIDs = newValue
+                defaults.set(newValue, forKey: "ignoredAppBundleIDs")
+            }
+        }
+    }
+
     @ObservationIgnored nonisolated(unsafe) private var _silenceTimeoutMinutes: Int
     var silenceTimeoutMinutes: Int {
         get { access(keyPath: \.silenceTimeoutMinutes); return _silenceTimeoutMinutes }
@@ -400,6 +542,54 @@ final class SettingsStore {
                 _hideFromScreenShare = newValue
                 defaults.set(newValue, forKey: "hideFromScreenShare")
                 applyScreenShareVisibility()
+            }
+        }
+    }
+
+    // MARK: - Import Settings
+
+    @ObservationIgnored nonisolated(unsafe) private var _granolaApiKey: String
+    var granolaApiKey: String {
+        get { access(keyPath: \.granolaApiKey); return _granolaApiKey }
+        set {
+            withMutation(keyPath: \.granolaApiKey) {
+                _granolaApiKey = newValue
+                secretStore.save(key: "granolaApiKey", value: newValue)
+            }
+        }
+    }
+
+    // MARK: - Webhook Settings
+
+    @ObservationIgnored nonisolated(unsafe) private var _webhookEnabled: Bool
+    var webhookEnabled: Bool {
+        get { access(keyPath: \.webhookEnabled); return _webhookEnabled }
+        set {
+            withMutation(keyPath: \.webhookEnabled) {
+                _webhookEnabled = newValue
+                defaults.set(newValue, forKey: "webhookEnabled")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _webhookURL: String
+    var webhookURL: String {
+        get { access(keyPath: \.webhookURL); return _webhookURL }
+        set {
+            withMutation(keyPath: \.webhookURL) {
+                _webhookURL = newValue
+                defaults.set(newValue, forKey: "webhookURL")
+            }
+        }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _webhookSecret: String
+    var webhookSecret: String {
+        get { access(keyPath: \.webhookSecret); return _webhookSecret }
+        set {
+            withMutation(keyPath: \.webhookSecret) {
+                _webhookSecret = newValue
+                secretStore.save(key: "webhookSecret", value: newValue)
             }
         }
     }
@@ -465,9 +655,21 @@ final class SettingsStore {
             Self.migrateKeychainServiceIfNeeded(defaults: defaults)
         }
 
+        // Migrate renamed settings keys (old -> new)
+        if defaults.object(forKey: "enableLiveTranscriptCleanup") == nil,
+           let oldValue = defaults.object(forKey: Self.enableLiveTranscriptCleanupLegacyKey) {
+            defaults.set(oldValue, forKey: "enableLiveTranscriptCleanup")
+        }
+        if defaults.object(forKey: "enableBatchRetranscription") == nil,
+           let oldValue = defaults.object(forKey: Self.enableBatchRetranscriptionLegacyKey) {
+            defaults.set(oldValue, forKey: "enableBatchRetranscription")
+        }
+
         // AI Settings
         self._llmProvider = LLMProvider(rawValue: defaults.string(forKey: "llmProvider") ?? "") ?? .openRouter
         self._openRouterApiKey = storage.secretStore.load(key: "openRouterApiKey") ?? ""
+        self._assemblyAIApiKey = storage.secretStore.load(key: "assemblyAIApiKey") ?? ""
+        self._elevenLabsApiKey = storage.secretStore.load(key: "elevenLabsApiKey") ?? ""
         self._ollamaBaseURL = defaults.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434"
         self._ollamaLLMModel = defaults.string(forKey: "ollamaLLMModel") ?? "qwen3:8b"
         self._ollamaEmbedModel = defaults.string(forKey: "ollamaEmbedModel") ?? "nomic-embed-text"
@@ -485,10 +687,25 @@ final class SettingsStore {
         self._suggestionVerbosity = SuggestionVerbosity(
             rawValue: defaults.string(forKey: "suggestionVerbosity") ?? ""
         ) ?? .quiet
-        self._enableTranscriptRefinement = defaults.bool(forKey: "enableTranscriptRefinement")
+        self._enableLiveTranscriptCleanup = defaults.bool(forKey: "enableLiveTranscriptCleanup")
+        self._realtimeModel = defaults.string(forKey: "realtimeModel") ?? "google/gemini-3.1-flash-lite-preview"
+        self._realtimeOllamaModel = defaults.string(forKey: "realtimeOllamaModel") ?? ""
+        if defaults.object(forKey: "suggestionPanelEnabled") == nil {
+            self._suggestionPanelEnabled = true
+        } else {
+            self._suggestionPanelEnabled = defaults.bool(forKey: "suggestionPanelEnabled")
+        }
+        self._sidebarMode = SidebarMode(rawValue: defaults.string(forKey: "sidebarMode") ?? "") ?? .classicSuggestions
+        self._sidecastIntensity = SidecastIntensity(rawValue: defaults.string(forKey: "sidecastIntensity") ?? "") ?? .balanced
+        self._sidecastPersonas = Self.decodePersonas(defaults.data(forKey: "sidecastPersonas")) ?? SidecastPersona.starterPack
+        self._preFetchIntervalSeconds = defaults.object(forKey: "preFetchIntervalSeconds") != nil
+            ? defaults.double(forKey: "preFetchIntervalSeconds") : 4.0
+        self._kbSimilarityThreshold = defaults.object(forKey: "kbSimilarityThreshold") != nil
+            ? defaults.double(forKey: "kbSimilarityThreshold") : 0.35
 
         // Capture Settings
         self._inputDeviceID = AudioDeviceID(defaults.integer(forKey: "inputDeviceID"))
+        self._outputDeviceID = AudioDeviceID(defaults.integer(forKey: "outputDeviceID"))
         self._transcriptionModel = TranscriptionModel(
             rawValue: defaults.string(forKey: "transcriptionModel") ?? ""
         ) ?? .parakeetV2
@@ -502,10 +719,10 @@ final class SettingsStore {
             self._enableEchoCancellation = defaults.bool(forKey: "enableEchoCancellation")
         }
 
-        if defaults.object(forKey: "enableBatchRefinement") == nil {
-            self._enableBatchRefinement = false
+        if defaults.object(forKey: "enableBatchRetranscription") == nil {
+            self._enableBatchRetranscription = false
         } else {
-            self._enableBatchRefinement = defaults.bool(forKey: "enableBatchRefinement")
+            self._enableBatchRetranscription = defaults.bool(forKey: "enableBatchRetranscription")
         }
         self._batchTranscriptionModel = TranscriptionModel(
             rawValue: defaults.string(forKey: "batchTranscriptionModel") ?? ""
@@ -520,6 +737,7 @@ final class SettingsStore {
             self._meetingAutoDetectEnabled = defaults.bool(forKey: "meetingAutoDetectEnabled")
         }
         self._customMeetingAppBundleIDs = defaults.stringArray(forKey: "customMeetingAppBundleIDs") ?? []
+        self._ignoredAppBundleIDs = defaults.stringArray(forKey: "ignoredAppBundleIDs") ?? []
         self._silenceTimeoutMinutes = defaults.object(forKey: "silenceTimeoutMinutes") != nil
             ? defaults.integer(forKey: "silenceTimeoutMinutes") : 15
         self._detectionLogEnabled = defaults.bool(forKey: "detectionLogEnabled")
@@ -532,6 +750,14 @@ final class SettingsStore {
         } else {
             self._hideFromScreenShare = defaults.bool(forKey: "hideFromScreenShare")
         }
+
+        // Import Settings
+        self._granolaApiKey = storage.secretStore.load(key: "granolaApiKey") ?? ""
+
+        // Webhook Settings
+        self._webhookEnabled = defaults.bool(forKey: "webhookEnabled")
+        self._webhookURL = defaults.string(forKey: "webhookURL") ?? ""
+        self._webhookSecret = storage.secretStore.load(key: "webhookSecret") ?? ""
 
         // UI Settings
         if defaults.object(forKey: "showLiveTranscript") == nil {
@@ -555,6 +781,15 @@ final class SettingsStore {
     }
 
     // MARK: - Computed Properties
+
+    /// Returns the cloud ASR API key for the current transcription model.
+    var cloudASRApiKey: String {
+        switch transcriptionModel {
+        case .assemblyAI: assemblyAIApiKey
+        case .elevenLabsScribe: elevenLabsApiKey
+        default: ""
+        }
+    }
 
     var kbFolderURL: URL? {
         guard !kbFolderPath.isEmpty else { return nil }
@@ -581,6 +816,31 @@ final class SettingsStore {
         return raw.split(separator: "/").last.map(String.init) ?? raw
     }
 
+    /// The model ID to use for real-time suggestion synthesis.
+    var activeRealtimeModel: String {
+        switch llmProvider {
+        case .openRouter: return realtimeModel
+        case .ollama: return realtimeOllamaModel.isEmpty ? ollamaLLMModel : realtimeOllamaModel
+        case .mlx: return mlxModel
+        case .openAICompatible: return openAILLMModel
+        }
+    }
+
+    /// Display name for the active realtime model.
+    var activeRealtimeModelDisplay: String {
+        let raw = activeRealtimeModel
+        return raw.split(separator: "/").last.map(String.init) ?? raw
+    }
+
+    var enabledSidecastPersonas: [SidecastPersona] {
+        sidecastPersonas.filter(\.isEnabled)
+    }
+
+    func toggleSidecastPersona(at index: Int) {
+        guard sidecastPersonas.indices.contains(index) else { return }
+        sidecastPersonas[index].isEnabled.toggle()
+    }
+
     // MARK: - Screen Share Visibility
 
     /// Apply current screen-share visibility to all app windows.
@@ -599,6 +859,16 @@ final class SettingsStore {
         if !FileManager.default.fileExists(atPath: sentinel.path) {
             FileManager.default.createFile(atPath: sentinel.path, contents: nil)
         }
+    }
+
+    private static func encodePersonas(_ personas: [SidecastPersona]) -> Data? {
+        let encoder = JSONEncoder()
+        return try? encoder.encode(personas)
+    }
+
+    private static func decodePersonas(_ data: Data?) -> [SidecastPersona]? {
+        guard let data else { return nil }
+        return try? JSONDecoder().decode([SidecastPersona].self, from: data)
     }
 }
 

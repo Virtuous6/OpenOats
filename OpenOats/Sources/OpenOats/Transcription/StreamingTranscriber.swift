@@ -11,7 +11,6 @@ final class StreamingTranscriber: @unchecked Sendable {
     private let speaker: Speaker
     private let onPartial: @Sendable (String) -> Void
     private let onFinal: @Sendable (String) -> Void
-    private let log = Logger(subsystem: "com.openoats", category: "StreamingTranscriber")
 
     /// Resampler from source format to 16kHz mono Float32.
     private var converter: AVAudioConverter?
@@ -22,11 +21,21 @@ final class StreamingTranscriber: @unchecked Sendable {
         interleaved: false
     )!
 
+    /// Flush interval in 16kHz samples. Determined by the transcription model.
+    private let flushInterval: Int
+
+    /// When true, skip inline partial hypotheses to avoid blocking the VAD loop.
+    /// Cloud backends (AssemblyAI, ElevenLabs) are too slow for partial transcription
+    /// because each call involves an HTTP upload + polling cycle that stalls audio processing.
+    private let skipPartials: Bool
+
     init(
         backend: any TranscriptionBackend,
         locale: Locale,
         vadManager: VadManager,
         speaker: Speaker,
+        flushInterval: Int,
+        skipPartials: Bool = false,
         onPartial: @escaping @Sendable (String) -> Void,
         onFinal: @escaping @Sendable (String) -> Void
     ) {
@@ -34,6 +43,8 @@ final class StreamingTranscriber: @unchecked Sendable {
         self.locale = locale
         self.vadManager = vadManager
         self.speaker = speaker
+        self.flushInterval = flushInterval
+        self.skipPartials = skipPartials
         self.onPartial = onPartial
         self.onFinal = onFinal
     }
@@ -43,12 +54,7 @@ final class StreamingTranscriber: @unchecked Sendable {
     /// Parakeet TDT requires >= 1s of audio; shorter segments produce unreliable output.
     private static let minimumSpeechSamples = 16_000
     private static let prerollChunkCount = 2
-    /// Flush speech for transcription every ~10 seconds (160,000 samples at 16kHz).
-    /// Longer flush windows give the conformer encoder more context per segment,
-    /// reducing WER significantly (benchmarked: 13.6% at 5s vs 8.8% at 10s on Polish).
-    /// VAD speechEnd events still trigger immediate flush on natural pauses,
-    /// so short utterances appear without the full 10s delay.
-    private static let flushInterval = 10 * 16_000
+    // flushInterval is now an instance property, set per-model via TranscriptionModel.flushIntervalSamples
     /// Number of trailing words to carry across segment boundaries for decoder priming.
     private static let contextWordCount = 5
 
@@ -61,19 +67,21 @@ final class StreamingTranscriber: @unchecked Sendable {
         var recentChunks: [[Float]] = []
         var isSpeaking = false
         var bufferCount = 0
+        var lastPartialTime: Date = .distantPast
+        var isRunningPartial = false
 
         for await buffer in stream {
             bufferCount += 1
             if bufferCount <= 3 {
                 let fmt = buffer.format
-                diagLog("[\(speaker.storageKey)] buffer #\(bufferCount): frames=\(buffer.frameLength) sr=\(fmt.sampleRate) ch=\(fmt.channelCount) interleaved=\(fmt.isInterleaved) common=\(fmt.commonFormat.rawValue)")
+                Log.streaming.debug("[\(self.speaker.storageKey, privacy: .public)] buffer #\(bufferCount, privacy: .public): frames=\(buffer.frameLength, privacy: .public) sr=\(fmt.sampleRate, privacy: .public) ch=\(fmt.channelCount, privacy: .public) interleaved=\(fmt.isInterleaved, privacy: .public) common=\(fmt.commonFormat.rawValue, privacy: .public)")
             }
 
             guard let samples = extractSamples(buffer) else { continue }
 
             if bufferCount <= 3 {
                 let maxVal = samples.max() ?? 0
-                diagLog("[\(speaker.storageKey)] samples: count=\(samples.count) max=\(maxVal)")
+                Log.streaming.debug("[\(self.speaker.storageKey, privacy: .public)] samples: count=\(samples.count, privacy: .public) max=\(maxVal, privacy: .public)")
             }
 
             vadBuffer.append(contentsOf: samples)
@@ -108,7 +116,7 @@ final class StreamingTranscriber: @unchecked Sendable {
                                 isSpeaking = true
                                 startedSpeech = true
                                 speechSamples = recentChunks.suffix(Self.prerollChunkCount).flatMap { $0 }
-                                diagLog("[\(self.speaker.storageKey)] speech start")
+                                Log.streaming.debug("[\(self.speaker.storageKey, privacy: .public)] speech start")
                             }
 
                         case .speechEnd:
@@ -128,30 +136,56 @@ final class StreamingTranscriber: @unchecked Sendable {
 
                     if endedSpeech {
                         isSpeaking = false
-                        diagLog("[\(self.speaker.storageKey)] speech end, samples=\(speechSamples.count)")
+                        isRunningPartial = false
+                        Log.streaming.debug("[\(self.speaker.storageKey, privacy: .public)] speech end, samples=\(speechSamples.count, privacy: .public)")
                         if speechSamples.count > Self.minimumSpeechSamples {
                             let segment = speechSamples
                             speechSamples.removeAll(keepingCapacity: true)
+                            onPartial("")  // Clear partial display
                             await transcribeSegment(segment)
                         } else {
                             speechSamples.removeAll(keepingCapacity: true)
+                            onPartial("")  // Clear partial display
                         }
                     } else if isSpeaking {
 
+                        // Throttled partial hypothesis every ~400ms.
+                        // Skipped for cloud backends — each call blocks the VAD loop
+                        // for seconds while the HTTP round-trip completes.
+                        if !skipPartials,
+                           !isRunningPartial,
+                           speechSamples.count > Self.minimumSpeechSamples,
+                           Date.now.timeIntervalSince(lastPartialTime) >= 0.4 {
+                            isRunningPartial = true
+                            lastPartialTime = .now
+                            let snapshot = speechSamples
+                            do {
+                                let text = try await backend.transcribe(snapshot, locale: locale, previousContext: nil)
+                                if !text.isEmpty && !Task.isCancelled {
+                                    onPartial(text)
+                                }
+                            } catch {
+                                // Best-effort — ignore
+                            }
+                            isRunningPartial = false
+                        }
+
                         // Flush on long continuous speech (see flushInterval)
-                        if speechSamples.count >= Self.flushInterval {
+                        if speechSamples.count >= flushInterval {
                             let segment = speechSamples
                             speechSamples.removeAll(keepingCapacity: true)
+                            onPartial("")  // Clear partial display
                             await transcribeSegment(segment)
                         }
                     }
                 } catch {
-                    log.error("VAD error: \(error.localizedDescription)")
+                    Log.streaming.error("VAD error: \(error, privacy: .public)")
                 }
             }
         }
 
         if speechSamples.count > Self.minimumSpeechSamples {
+            onPartial("")  // Clear partial display
             await transcribeSegment(speechSamples)
         }
     }
@@ -163,13 +197,13 @@ final class StreamingTranscriber: @unchecked Sendable {
         do {
             let text = try await backend.transcribe(samples, locale: locale, previousContext: previousContext)
             guard !text.isEmpty else { return }
-            log.info("[\(self.speaker.storageKey)] transcribed: \(text.prefix(80))")
+            Log.streaming.debug("[\(self.speaker.storageKey, privacy: .public)] transcribed: \(text.prefix(80), privacy: .private)")
             // Store trailing words for cross-segment context
             let words = text.split(separator: " ")
             previousContext = words.suffix(Self.contextWordCount).joined(separator: " ")
             onFinal(text)
         } catch {
-            log.error("ASR error: \(error.localizedDescription)")
+            Log.streaming.error("ASR error: \(error, privacy: .public)")
         }
     }
 
@@ -244,7 +278,7 @@ final class StreamingTranscriber: @unchecked Sendable {
         }
 
         if let error {
-            log.error("Resample error: \(error.localizedDescription)")
+            Log.streaming.error("Resample error: \(error, privacy: .public)")
             return nil
         }
 

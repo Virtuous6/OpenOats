@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import Accelerate
 import AudioToolbox
 import CoreAudio
 import Dispatch
@@ -7,6 +8,11 @@ import os
 
 /// Captures system output audio via a Core Audio process tap.
 final class SystemAudioCapture: @unchecked Sendable {
+    private let _audioLevel = AudioLevel()
+
+    /// Thread-safe audio level (0…1) from the system audio stream.
+    var audioLevel: Float { _audioLevel.value }
+
     private let _aggregateDeviceID = OSAllocatedUnfairLock<AudioObjectID>(
         uncheckedState: AudioObjectID(kAudioObjectUnknown)
     )
@@ -33,8 +39,18 @@ final class SystemAudioCapture: @unchecked Sendable {
             self._sysContinuation.withLock { $0 = continuation }
         }
 
-        let outputDeviceID = try (outputDeviceID ?? Self.defaultOutputDeviceID())
-        let outputUID = try Self.deviceUID(for: outputDeviceID)
+        let resolvedDeviceID: AudioDeviceID
+        if let requested = outputDeviceID {
+            // Verify the requested device is still available; fall back to system default if not
+            if (try? Self.deviceUID(for: requested)) != nil {
+                resolvedDeviceID = requested
+            } else {
+                resolvedDeviceID = try Self.defaultOutputDeviceID()
+            }
+        } else {
+            resolvedDeviceID = try Self.defaultOutputDeviceID()
+        }
+        let outputUID = try Self.deviceUID(for: resolvedDeviceID)
         let tapUUID = UUID()
 
         let tapDescription = CATapDescription()
@@ -66,7 +82,8 @@ final class SystemAudioCapture: @unchecked Sendable {
             kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceSubDeviceListKey: [
                 [
-                    kAudioSubDeviceUIDKey: outputUID
+                    kAudioSubDeviceUIDKey: outputUID,
+                    kAudioSubDeviceInputChannelsKey: []
                 ]
             ],
             kAudioAggregateDeviceTapListKey: [
@@ -140,6 +157,7 @@ final class SystemAudioCapture: @unchecked Sendable {
 
     func stop() async {
         finishStream()
+        _audioLevel.value = 0
 
         let aggregateDeviceID = _aggregateDeviceID.withLock { state -> AudioObjectID in
             let current = state
@@ -212,6 +230,13 @@ final class SystemAudioCapture: @unchecked Sendable {
             destinationBuffers[index].mDataByteSize = UInt32(copySize)
         }
 
+        // Compute RMS audio level for the UI visualisation.
+        if let channelData = pcmBuffer.floatChannelData, pcmBuffer.frameLength > 0 {
+            var rms: Float = 0
+            vDSP_rmsqv(channelData[0], 1, &rms, vDSP_Length(pcmBuffer.frameLength))
+            _audioLevel.value = min(rms * 25, 1.0)
+        }
+
         _ = _sysContinuation.withLock { $0?.yield(pcmBuffer) }
     }
 
@@ -268,6 +293,34 @@ final class SystemAudioCapture: @unchecked Sendable {
             throw CaptureError.noOutputDevice
         }
         return deviceID
+    }
+
+    /// Returns a list of available output (speaker) audio devices.
+    static func availableOutputDevices() -> [(id: AudioDeviceID, name: String)] {
+        var address = propertyAddress(selector: kAudioHardwarePropertyDevices)
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize) == noErr else { return [] }
+
+        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &deviceIDs) == noErr else { return [] }
+
+        var result: [(id: AudioDeviceID, name: String)] = []
+        for deviceID in deviceIDs {
+            // Check if this device has output streams
+            var outputAddress = propertyAddress(selector: kAudioDevicePropertyStreams, scope: kAudioDevicePropertyScopeOutput)
+            var outputSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(deviceID, &outputAddress, 0, nil, &outputSize) == noErr, outputSize > 0 else { continue }
+
+            // Get device name
+            var nameAddress = propertyAddress(selector: kAudioObjectPropertyName)
+            var cfName: Unmanaged<CFString>?
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            guard AudioObjectGetPropertyData(deviceID, &nameAddress, 0, nil, &nameSize, &cfName) == noErr, let name = cfName?.takeRetainedValue() as String? else { continue }
+
+            result.append((id: deviceID, name: name))
+        }
+        return result
     }
 
     private static func deviceUID(for deviceID: AudioDeviceID) throws -> String {

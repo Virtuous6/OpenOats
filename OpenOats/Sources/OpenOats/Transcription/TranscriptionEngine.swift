@@ -4,26 +4,48 @@ import FluidAudio
 import Observation
 import os
 
-/// Simple file logger for diagnostics — writes to /tmp/openoats.log
-func diagLog(_ msg: String) {
-    let line = "\(Date()): \(msg)\n"
-    let path = "/tmp/openoats.log"
-    if let fh = FileHandle(forWritingAtPath: path) {
-        fh.seekToEndOfFile()
-        fh.write(line.data(using: .utf8)!)
-        fh.closeFile()
-    } else {
-        FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8))
+/// Enriched download progress info computed from fraction changes over time.
+struct DownloadProgressDetail: Sendable {
+    let fraction: Double
+    /// Formatted string like "142 MB / 800 MB"
+    let sizeText: String?
+    /// Formatted string like "3.5 MB/s"
+    let speedText: String?
+    /// Formatted string like "2m 15s remaining"
+    let etaText: String?
+}
+
+/// Session-scoped transcription settings captured at start time.
+struct ActiveTranscriptionSession: Sendable, Equatable {
+    let transcriptionModel: TranscriptionModel
+
+    var flushIntervalSamples: Int {
+        transcriptionModel.flushIntervalSamples
+    }
+
+    func clearModelCache(
+        using makeBackend: (TranscriptionModel) -> any TranscriptionBackend = { $0.makeBackend() }
+    ) {
+        makeBackend(transcriptionModel).clearModelCache()
     }
 }
 
-enum TranscriptionEngineError: LocalizedError {
-    case transcriberNotInitialized
+/// Stops forwarding diarization samples after the first feed failure.
+struct DiarizationFeedRelay: Sendable {
+    private(set) var hasFailed = false
 
-    var errorDescription: String? {
-        switch self {
-        case .transcriberNotInitialized:
-            "Transcription engine is not initialized. Please check your audio settings."
+    mutating func feedAudio(
+        _ samples: [Float],
+        into feedAudio: @Sendable ([Float]) async throws -> Void,
+        onFailure: @Sendable (Error) async -> Void
+    ) async {
+        guard !hasFailed else { return }
+
+        do {
+            try await feedAudio(samples)
+        } catch {
+            hasFailed = true
+            await onFailure(error)
         }
     }
 }
@@ -76,18 +98,35 @@ final class TranscriptionEngine {
         set { withMutation(keyPath: \.downloadConfirmed) { _downloadConfirmed = newValue } }
     }
 
+    @ObservationIgnored nonisolated(unsafe) private var _downloadProgress: Double?
+    /// Fraction complete (0…1) during model download, nil when not downloading.
+    var downloadProgress: Double? {
+        get { access(keyPath: \.downloadProgress); return _downloadProgress }
+        set { withMutation(keyPath: \.downloadProgress) { _downloadProgress = newValue } }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _downloadDetail: DownloadProgressDetail?
+    var downloadDetail: DownloadProgressDetail? {
+        get { access(keyPath: \.downloadDetail); return _downloadDetail }
+        set { withMutation(keyPath: \.downloadDetail) { _downloadDetail = newValue } }
+    }
+
+    // Progress tracking state (not observed)
+    @ObservationIgnored private var downloadStartTime: Date?
+    @ObservationIgnored private var downloadTotalBytes: Int64?
+
     private let systemCapture = SystemAudioCapture()
     private let micCapture = MicCapture()
     private let transcriptStore: TranscriptStore
     private let settings: AppSettings
     private let mode: Mode
 
-    /// Audio level from mic for the UI meter.
-    /// nonisolated is safe here — micCapture.audioLevel is thread-safe (NSLock).
+    /// Combined audio level (mic + system) for the UI meter.
+    /// nonisolated is safe here — both audioLevel properties are thread-safe (NSLock).
     nonisolated var audioLevel: Float {
         switch mode {
         case .live:
-            micCapture.audioLevel
+            max(micCapture.audioLevel, systemCapture.audioLevel)
         case .scripted:
             _isRunning ? 0.35 : 0
         }
@@ -121,6 +160,9 @@ final class TranscriptionEngine {
 
     /// Neural echo canceller (nil when AEC is disabled or models failed to load).
     private var echoCanceller: EchoCanceller?
+
+    /// Active transcription model captured for the current session/startup.
+    @ObservationIgnored nonisolated(unsafe) var activeTranscriptionSession: ActiveTranscriptionSession?
 
     /// Tracks the resolved mic device ID currently in use.
     private var currentMicDeviceID: AudioDeviceID = 0
@@ -158,13 +200,44 @@ final class TranscriptionEngine {
         }
     }
 
+    /// Download the model without starting a transcription session.
+    func downloadModelOnly(transcriptionModel: TranscriptionModel) async {
+        guard !isRunning, downloadProgress == nil else { return }
+
+        refreshModelAvailability()
+        guard needsModelDownload else { return }
+
+        lastError = nil
+        assetStatus = "Downloading \(transcriptionModel.displayName)..."
+        beginDownloadTracking(for: transcriptionModel)
+
+        let vocab = settings.transcriptionCustomVocabulary
+        let backend = transcriptionModel.makeBackend(customVocabulary: vocab)
+        do {
+            try await prepareBackend(backend)
+            needsModelDownload = false
+            downloadConfirmed = false
+            clearDownloadTracking()
+            assetStatus = "Ready"
+        } catch is CancellationError {
+            clearDownloadTracking()
+            assetStatus = "Ready"
+        } catch {
+            lastError = "Failed to download: \(error.localizedDescription)"
+            assetStatus = "Ready"
+            clearDownloadTracking()
+            transcriptionModel.makeBackend().clearModelCache()
+            needsModelDownload = true
+        }
+    }
+
     func start(
         locale: Locale,
         inputDeviceID: AudioDeviceID = 0,
         transcriptionModel: TranscriptionModel
     ) async {
-        diagLog("[ENGINE-0] start() called, isRunning=\(isRunning)")
-        guard !isRunning else { return }
+        Log.transcription.info("start() called, isRunning=\(self.isRunning, privacy: .public)")
+        guard !isRunning, downloadProgress == nil else { return }
         lastError = nil
         refreshModelAvailability()
 
@@ -192,72 +265,91 @@ final class TranscriptionEngine {
             return
         }
 
-        guard await ensureMicrophonePermission() else { return }
+        activeTranscriptionSession = ActiveTranscriptionSession(
+            transcriptionModel: transcriptionModel
+        )
+
+        guard await ensureMicrophonePermission() else {
+            activeTranscriptionSession = nil
+            return
+        }
 
         isRunning = true
 
         // 1. Load transcription models via backend protocol
-        assetStatus = needsModelDownload
+        let isDownloading = needsModelDownload
+        assetStatus = isDownloading
             ? "Downloading \(transcriptionModel.displayName)..."
             : "Loading \(transcriptionModel.displayName)..."
-        diagLog("[ENGINE-1] loading transcription model \(transcriptionModel.rawValue)...")
+        if isDownloading {
+            beginDownloadTracking(for: transcriptionModel)
+        }
+        Log.transcription.info("Loading transcription model \(transcriptionModel.rawValue, privacy: .public)")
         do {
             let vocab = settings.transcriptionCustomVocabulary
-            let mic = transcriptionModel.makeBackend(customVocabulary: vocab)
-            try await mic.prepare { [weak self] status in
-                Task { @MainActor in
-                    self?.assetStatus = status
-                }
-            }
+            let apiKey = settings.cloudASRApiKey
+            let mic = transcriptionModel.makeBackend(customVocabulary: vocab, apiKey: apiKey)
+            try await prepareBackend(mic)
             self.micBackend = mic
 
             // Parakeet needs a separate backend for system audio (mutable decoder state).
             // Qwen3 is actor-based and thread-safe, so reuse the same instance.
-            if transcriptionModel == .qwen3ASR06B {
+            if transcriptionModel == .qwen3ASR06B || transcriptionModel.isCloud {
                 self.systemBackend = mic
             } else {
-                let sys = transcriptionModel.makeBackend(customVocabulary: vocab)
+                let sys = transcriptionModel.makeBackend(customVocabulary: vocab, apiKey: apiKey)
                 try await sys.prepare { _ in }
                 self.systemBackend = sys
             }
 
             assetStatus = "Loading VAD model..."
-            diagLog("[ENGINE-1b] loading VAD model...")
+            Log.transcription.info("Loading VAD model")
             let vad = try await VadManager()
             self.vadManager = vad
 
             // Optionally load speaker diarization model
             if settings.enableDiarization {
                 assetStatus = "Loading diarization model..."
-                diagLog("[ENGINE-1c] loading LS-EEND diarization model...")
+                Log.transcription.info("Loading LS-EEND diarization model")
                 let dm = DiarizationManager()
                 let variant = LSEENDVariant(rawValue: settings.diarizationVariant.rawValue) ?? .dihard3
                 try await dm.load(variant: variant)
                 self.diarizationManager = dm
-                diagLog("[ENGINE-1c] diarization model loaded")
+                Log.transcription.info("Diarization model loaded")
             } else {
                 self.diarizationManager = nil
             }
 
             needsModelDownload = false
             downloadConfirmed = false
+            clearDownloadTracking()
             assetStatus = "Models ready"
-            diagLog("[ENGINE-2] transcription model loaded")
+            Log.transcription.info("Transcription model loaded")
         } catch {
             let msg = "Failed to load models: \(error.localizedDescription)"
-            diagLog("[ENGINE-2-FAIL] \(msg)")
+            Log.transcription.error("Failed to load models: \(error, privacy: .public)")
             lastError = msg
             assetStatus = "Ready"
             isRunning = false
-            // Clear corrupt cache so the next attempt triggers a fresh download
-            settings.transcriptionModel.makeBackend().clearModelCache()
-            diagLog("[ENGINE-2-FAIL] cleared model cache for \(settings.transcriptionModel.rawValue)")
-            needsModelDownload = true
+            clearDownloadTracking()
+            // Clear corrupt cache so the next attempt triggers a fresh download.
+            // Cloud models don't have local caches or download flows.
+            if !transcriptionModel.isCloud {
+                activeTranscriptionSession?.clearModelCache()
+                Log.transcription.info(
+                    "Cleared model cache for \(transcriptionModel.rawValue, privacy: .public)"
+                )
+                needsModelDownload = true
+            }
             downloadConfirmed = false
+            activeTranscriptionSession = nil
             return
         }
 
-        guard let vadManager else { return }
+        guard let vadManager else {
+            activeTranscriptionSession = nil
+            return
+        }
 
         // 1b. Initialize neural echo cancellation (DTLN-AEC)
         if settings.enableEchoCancellation {
@@ -265,9 +357,9 @@ final class TranscriptionEngine {
             do {
                 try await aec.loadModels()
                 echoCanceller = aec
-                diagLog("[ENGINE-AEC] DTLN-AEC loaded successfully")
+                Log.transcription.info("[ENGINE-AEC] DTLN-AEC loaded successfully")
             } catch {
-                diagLog("[ENGINE-AEC] DTLN-AEC failed to load: \(error.localizedDescription), continuing without AEC")
+                Log.transcription.warning("[ENGINE-AEC] DTLN-AEC failed to load: \(error.localizedDescription, privacy: .public), continuing without AEC")
                 echoCanceller = nil
             }
         } else {
@@ -278,10 +370,11 @@ final class TranscriptionEngine {
         userSelectedDeviceID = inputDeviceID
         guard let targetMicID = resolvedMicDeviceID(for: inputDeviceID) else {
             let msg = unavailableMicMessage(for: inputDeviceID)
-            diagLog("[ENGINE-3-FAIL] \(msg)")
+            Log.transcription.error("Mic unavailable: \(msg, privacy: .public)")
             lastError = msg
             assetStatus = "Ready"
             isRunning = false
+            activeTranscriptionSession = nil
             return
         }
         currentMicDeviceID = targetMicID
@@ -290,8 +383,11 @@ final class TranscriptionEngine {
         // Echo cancellation is handled by DTLN-AEC (neural, no CoreAudio interaction)
         // which runs as a stream transform after capture — see startMicStream/startSystemAudioStream.
         let useAEC = false
+        if settings.enableEchoCancellation {
+            Log.transcription.info("AEC disabled - conflicts with system audio capture")
+        }
 
-        diagLog("[ENGINE-3] starting mic capture, targetMicID=\(String(describing: targetMicID)), aec=\(useAEC)")
+        Log.transcription.info("Starting mic capture, targetMicID=\(targetMicID, privacy: .public), aec=\(useAEC, privacy: .public)")
         startMicStream(
             locale: locale,
             vadManager: vadManager,
@@ -301,7 +397,7 @@ final class TranscriptionEngine {
 
         // Check for immediate mic capture failure
         if let micError = micCapture.captureError {
-            diagLog("[ENGINE-3-FAIL] mic capture error: \(micError)")
+            Log.transcription.error("Mic capture error: \(micError, privacy: .public)")
             lastError = micError
         }
 
@@ -312,7 +408,7 @@ final class TranscriptionEngine {
             guard let self, self.isRunning else { return }
             if !self.micCapture.hasCapturedFrames && self.micCapture.captureError == nil {
                 if useAEC {
-                    diagLog("[ENGINE-HEALTH] no mic audio after 5s with AEC, retrying without")
+                    Log.transcription.error("No mic audio after 5s with AEC, retrying without")
                     self.micCapture.finishStream()
                     await self.micTask?.value
                     self.micTask = nil
@@ -324,7 +420,7 @@ final class TranscriptionEngine {
                         echoCancellation: false
                     )
                 } else {
-                    diagLog("[ENGINE-HEALTH] no mic audio after 5s")
+                    Log.transcription.error("No mic audio after 5s")
                     self.lastError = "Microphone is not producing audio. Check your input device in System Settings."
                 }
             }
@@ -334,7 +430,7 @@ final class TranscriptionEngine {
         await startSystemAudioStream(locale: locale, vadManager: vadManager)
 
         assetStatus = "Transcribing (\(micBackend?.displayName ?? transcriptionModel.displayName))"
-        diagLog("[ENGINE-6] all transcription tasks started")
+        Log.transcription.info("All transcription tasks started")
 
         // Install CoreAudio listeners for live device routing changes
         installDefaultDeviceListener()
@@ -349,7 +445,7 @@ final class TranscriptionEngine {
         pendingMicDeviceID = inputDeviceID
 
         if micRestartTask != nil {
-            diagLog("[ENGINE-MIC-SWAP] queued restart for device \(inputDeviceID)")
+            Log.transcription.info("Queued mic restart for device \(inputDeviceID, privacy: .public)")
             return
         }
 
@@ -478,6 +574,7 @@ final class TranscriptionEngine {
             assetStatus = "Ready"
             transcriptStore.volatileYouText = ""
             transcriptStore.volatileThemText = ""
+            activeTranscriptionSession = nil
             return
         }
 
@@ -517,6 +614,10 @@ final class TranscriptionEngine {
 
         micBackend = nil
         systemBackend = nil
+        vadManager = nil
+        transcriptStore.volatileYouText = ""
+        transcriptStore.volatileThemText = ""
+        activeTranscriptionSession = nil
         isRunning = false
         assetStatus = "Ready"
     }
@@ -549,6 +650,10 @@ final class TranscriptionEngine {
         currentMicDeviceID = 0
         micBackend = nil
         systemBackend = nil
+        vadManager = nil
+        transcriptStore.volatileYouText = ""
+        transcriptStore.volatileThemText = ""
+        activeTranscriptionSession = nil
         isRunning = false
         assetStatus = "Ready"
     }
@@ -560,17 +665,17 @@ final class TranscriptionEngine {
 
         guard let targetMicID = resolvedMicDeviceID(for: inputDeviceID) else {
             let msg = unavailableMicMessage(for: inputDeviceID)
-            diagLog("[ENGINE-MIC-SWAP-FAIL] \(msg)")
+            Log.transcription.error("Mic swap failed: \(msg, privacy: .public)")
             lastError = msg
             return
         }
 
         guard targetMicID != currentMicDeviceID else {
-            diagLog("[ENGINE-MIC-SWAP] same device \(targetMicID), skipping")
+            Log.transcription.debug("Mic swap skipped, same device \(targetMicID, privacy: .public)")
             return
         }
 
-        diagLog("[ENGINE-MIC-SWAP] switching mic from \(currentMicDeviceID) to \(targetMicID)")
+        Log.transcription.info("Switching mic from \(self.currentMicDeviceID, privacy: .public) to \(targetMicID, privacy: .public)")
 
         micCapture.finishStream()
         await micTask?.value
@@ -589,7 +694,7 @@ final class TranscriptionEngine {
         currentMicDeviceID = targetMicID
         lastError = nil
 
-        diagLog("[ENGINE-MIC-SWAP] mic restarted on device \(targetMicID)")
+        Log.transcription.info("Mic restarted on device \(targetMicID, privacy: .public)")
     }
 
     private func restartSystemAudio() {
@@ -597,7 +702,7 @@ final class TranscriptionEngine {
         pendingSystemAudioRestart = true
 
         if sysRestartTask != nil {
-            diagLog("[ENGINE-SYS-SWAP] queued restart")
+            Log.transcription.info("Queued system audio restart")
             return
         }
 
@@ -615,7 +720,7 @@ final class TranscriptionEngine {
     private func performSystemAudioRestart() async {
         guard isRunning, let vadManager else { return }
 
-        diagLog("[ENGINE-SYS-SWAP] restarting system audio stream")
+        Log.transcription.info("Restarting system audio stream")
 
         systemCapture.finishStream()
         await sysTask?.value
@@ -628,7 +733,7 @@ final class TranscriptionEngine {
         await systemCapture.stop()
         await startSystemAudioStream(locale: settings.locale, vadManager: vadManager)
 
-        diagLog("[ENGINE-SYS-SWAP] system audio stream restarted")
+        Log.transcription.info("System audio stream restarted")
     }
 
     private func startMicStream(
@@ -668,6 +773,7 @@ final class TranscriptionEngine {
             lastError = "Failed to create transcriber. Try restarting."
             isRunning = false
             assetStatus = "Ready"
+            activeTranscriptionSession = nil
             return
         }
         micTask = Task.detached {
@@ -679,16 +785,17 @@ final class TranscriptionEngine {
         locale: Locale,
         vadManager: VadManager
     ) async {
-        diagLog("[ENGINE-4] starting system audio capture...")
+        Log.transcription.info("Starting system audio capture")
 
         let sysStreams: SystemAudioCapture.CaptureStreams
         do {
-            sysStreams = try await systemCapture.bufferStream()
-            diagLog("[ENGINE-5] system audio capture started OK")
+            let outputID: AudioDeviceID? = settings.outputDeviceID != 0 ? settings.outputDeviceID : nil
+            sysStreams = try await systemCapture.bufferStream(outputDeviceID: outputID)
+            Log.transcription.info("System audio capture started")
             clearSystemAudioErrorIfPresent()
         } catch {
             let msg = "Failed to start system audio: \(error.localizedDescription)"
-            diagLog("[ENGINE-5-FAIL] \(msg)")
+            Log.transcription.error("Failed to start system audio: \(error, privacy: .public)")
             lastError = msg
             return
         }
@@ -716,7 +823,8 @@ final class TranscriptionEngine {
             let originalSysStream = sysStream
             let (diarTapped, diarContinuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
             Task {
-                nonisolated(unsafe) let safeDm = dm
+                let safeDm = dm
+                var diarizationRelay = DiarizationFeedRelay()
                 var diarBuf: [Float] = []
                 for await buffer in originalSysStream {
                     nonisolated(unsafe) let b = buffer
@@ -728,12 +836,28 @@ final class TranscriptionEngine {
                     if diarBuf.count >= diarFlushSize {
                         let batch = diarBuf
                         diarBuf.removeAll(keepingCapacity: true)
-                        try? await safeDm.feedAudio(batch)
+                        await diarizationRelay.feedAudio(
+                            batch,
+                            into: { samples in try await safeDm.feedAudio(samples) },
+                            onFailure: { error in
+                                Log.transcription.error(
+                                    "Diarization feed failed: \(error, privacy: .public)"
+                                )
+                            }
+                        )
                     }
                 }
                 // Flush tail
                 if !diarBuf.isEmpty {
-                    try? await safeDm.feedAudio(diarBuf)
+                    await diarizationRelay.feedAudio(
+                        diarBuf,
+                        into: { samples in try await safeDm.feedAudio(samples) },
+                        onFailure: { error in
+                            Log.transcription.error(
+                                "Diarization feed failed: \(error, privacy: .public)"
+                            )
+                        }
+                    )
                 }
                 diarContinuation.finish()
             }
@@ -782,17 +906,24 @@ final class TranscriptionEngine {
     ) -> StreamingTranscriber? {
         let backend = speaker == .you ? micBackend : systemBackend
         guard let backend else {
-            diagLog("[ENGINE] makeTranscriber called without initialized backend for \(speaker.storageKey)")
+            Log.transcription.error("makeTranscriber called without initialized backend for \(speaker.storageKey, privacy: .public)")
             return nil
         }
+        let model = currentTranscriptionModel()
         return StreamingTranscriber(
             backend: backend,
             locale: locale,
             vadManager: vadManager,
             speaker: speaker,
+            flushInterval: model.flushIntervalSamples,
+            skipPartials: model.isCloud,
             onPartial: onPartial,
             onFinal: onFinal
         )
+    }
+
+    func currentTranscriptionModel() -> TranscriptionModel {
+        activeTranscriptionSession?.transcriptionModel ?? settings.transcriptionModel
     }
 
     private func resolvedMicDeviceID(for inputDeviceID: AudioDeviceID) -> AudioDeviceID? {
@@ -813,6 +944,7 @@ final class TranscriptionEngine {
     }
 
     private static func modelNeedsDownload(_ model: TranscriptionModel) -> Bool {
+        guard !model.isCloud else { return false }
         let backend = model.makeBackend()
         if case .needsDownload = backend.checkStatus() {
             return true
@@ -885,5 +1017,103 @@ final class TranscriptionEngine {
             lastError.localizedCaseInsensitiveContains("audio output device") {
             self.lastError = nil
         }
+    }
+
+    // MARK: - Download Helpers
+
+    private func beginDownloadTracking(for model: TranscriptionModel) {
+        downloadProgress = 0
+        downloadStartTime = Date()
+        downloadTotalBytes = model.estimatedDownloadBytes
+        downloadDetail = DownloadProgressDetail(fraction: 0, sizeText: nil, speedText: nil, etaText: nil)
+    }
+
+    private func clearDownloadTracking() {
+        downloadProgress = nil
+        downloadDetail = nil
+        downloadStartTime = nil
+        downloadTotalBytes = nil
+    }
+
+    private func prepareBackend(_ backend: any TranscriptionBackend) async throws {
+        try await backend.prepare(
+            onStatus: { [weak self] status in
+                Task { @MainActor in self?.assetStatus = status }
+            },
+            onProgress: { [weak self] fraction in
+                Task { @MainActor in
+                    self?.downloadProgress = fraction
+                    self?.updateDownloadDetail(fraction: fraction)
+                }
+            }
+        )
+    }
+
+    // MARK: - Download Progress Detail
+
+    private func updateDownloadDetail(fraction: Double) {
+        guard let startTime = downloadStartTime else {
+            downloadDetail = DownloadProgressDetail(fraction: fraction, sizeText: nil, speedText: nil, etaText: nil)
+            return
+        }
+
+        let elapsed = Date().timeIntervalSince(startTime)
+        let totalBytes = downloadTotalBytes
+
+        // Size text: "142 MB / 800 MB" (only when total is known)
+        var sizeText: String?
+        if let totalBytes {
+            let downloaded = Int64(fraction * Double(totalBytes))
+            sizeText = "\(Self.formatBytes(downloaded)) / \(Self.formatBytes(totalBytes))"
+        }
+
+        // Speed and ETA need enough elapsed time to be meaningful
+        var speedText: String?
+        var etaText: String?
+        if elapsed > 1, fraction > 0.01 {
+            // Speed from fraction progress rate + known total
+            if let totalBytes {
+                let bytesDownloaded = fraction * Double(totalBytes)
+                let bytesPerSecond = bytesDownloaded / elapsed
+                speedText = "\(Self.formatBytes(Int64(bytesPerSecond)))/s"
+
+                let remaining = Double(totalBytes) - bytesDownloaded
+                if bytesPerSecond > 0 {
+                    let secondsLeft = remaining / bytesPerSecond
+                    etaText = Self.formatDuration(secondsLeft)
+                }
+            } else {
+                // No total bytes known — estimate ETA from fraction rate alone
+                let fractionPerSecond = fraction / elapsed
+                if fractionPerSecond > 0 {
+                    let remainingFraction = 1.0 - fraction
+                    let secondsLeft = remainingFraction / fractionPerSecond
+                    etaText = Self.formatDuration(secondsLeft)
+                }
+            }
+        }
+
+        downloadDetail = DownloadProgressDetail(
+            fraction: fraction,
+            sizeText: sizeText,
+            speedText: speedText,
+            etaText: etaText
+        )
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        if bytes >= 1_000_000_000 {
+            return String(format: "%.1f GB", Double(bytes) / 1_000_000_000)
+        } else {
+            return String(format: "%.0f MB", Double(bytes) / 1_000_000)
+        }
+    }
+
+    private static func formatDuration(_ seconds: Double) -> String {
+        let s = Int(seconds)
+        if s < 60 { return "\(s)s remaining" }
+        let m = s / 60
+        let rem = s % 60
+        return rem > 0 ? "\(m)m \(rem)s remaining" : "\(m)m remaining"
     }
 }
