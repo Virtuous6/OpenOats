@@ -29,6 +29,7 @@ struct LiveSessionState {
     var modelDisplayName: String = ""
     var showLiveTranscript: Bool = true
     var isMicMuted: Bool = false
+    var intelligenceEngine: IntelligenceEngine? = nil
 }
 
 /// Owns all live session side effects: polling, utterance ingestion,
@@ -539,6 +540,7 @@ final class LiveSessionController {
         next.modelDisplayName = activeModelRaw.split(separator: "/").last.map(String.init) ?? activeModelRaw
         next.showLiveTranscript = settings.showLiveTranscript
         next.isMicMuted = coordinator.transcriptionEngine?.isMicMuted ?? false
+        next.intelligenceEngine = coordinator.intelligenceEngine
 
         state = next
     }

@@ -164,8 +164,8 @@ struct ContentView: View {
                 Divider()
             }
 
-            // Main content: Intelligence Panel (replaces upstream suggestion status bar)
-            if let intel = coordinator.intelligenceEngine {
+            // Main content: Intelligence Panel
+            if let intel = controllerState.intelligenceEngine {
                 IntelligencePanelView(
                     intelligenceEngine: intel,
                     suggestions: controllerState.suggestions,
@@ -302,7 +302,6 @@ struct ContentView: View {
             if coordinator.knowledgeBase == nil {
                 container.ensureServicesInitialized(settings: settings, coordinator: coordinator)
             }
-
             // Create and wire the controller
             let controller = LiveSessionController(coordinator: coordinator, container: container)
             controller.onRunningStateChanged = { [weak miniBarManager, weak notepadOverlayManager, weak overlayManager] isRunning in
